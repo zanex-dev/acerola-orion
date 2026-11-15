@@ -1,0 +1,2 @@
+# Acerola-Orion (雅赛劳拉莉昂) runs on 100% Python >=3.10 Standard Library + Win32 ctypes.
+# Zero external third-party dependencies required.

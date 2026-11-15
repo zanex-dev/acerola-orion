@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "acerola-orion"
+version = "0.2.2"
+description = "7-Decimal Live Quota Telemetry, Local Privacy-Isolated Token Ledger / Rate-Card Auditor (Orion), and Zero-Polling Win32 Kernel Process Guillotine (Acerola) for Google Antigravity."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [
+    { name = "zanex", email = "310354113+zanex-dev@users.noreply.github.com" }
+]
+keywords = [
+    "acerola-orion",
+    "kiss-shot",
+    "heart-under-blade",
+    "antigravity",
+    "telemetry",
+    "token-ledger",
+    "quota-monitor",
+    "process-guard"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Win32 (MS Windows)",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Monitoring",
+    "Topic :: Utilities",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/zanex-dev/acerola-orion"
+Repository = "https://github.com/zanex-dev/acerola-orion"
+Issues = "https://github.com/zanex-dev/acerola-orion/issues"
+
+[project.scripts]
+acerola-orion = "acerola_orion.__main__:main"
+orion = "acerola_orion.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["acerola_orion*"]
