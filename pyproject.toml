@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "acerola-orion"
-version = "0.2.2"
+version = "1.0.0"
 description = "7-Decimal Live Quota Telemetry, Local Privacy-Isolated Token Ledger / Rate-Card Auditor (Orion), and Zero-Polling Win32 Kernel Process Guillotine (Acerola) for Google Antigravity."
 readme = "README.md"
 license = { text = "MIT" }
@@ -23,7 +23,7 @@ keywords = [
     "process-guard"
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Win32 (MS Windows)",
     "Environment :: Console",
     "Intended Audience :: Developers",
@@ -41,6 +41,7 @@ dependencies = []
 Homepage = "https://github.com/zanex-dev/acerola-orion"
 Repository = "https://github.com/zanex-dev/acerola-orion"
 Issues = "https://github.com/zanex-dev/acerola-orion/issues"
+Changelog = "https://github.com/zanex-dev/acerola-orion/blob/main/CHANGELOG.md"
 
 [project.scripts]
 acerola-orion = "acerola_orion.__main__:main"

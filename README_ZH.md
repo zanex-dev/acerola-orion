@@ -10,14 +10,14 @@
 
 <p align="center">
   <a href="https://github.com/zanex-dev/acerola-orion/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-12%2F12%20passing-brightgreen" alt="Tests" /></a>
-  <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v0.2.2-be123c" alt="Version v0.2.2" /></a>
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v1.0.0-be123c" alt="Version v1.0.0" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-e11d48.svg" alt="License: MIT" /></a>
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.10%2B%20(0%20deps)-3776AB.svg" alt="Python 3.10+" /></a>
   <img src="https://img.shields.io/badge/network-127.0.0.1%20loopback%20only-059669" alt="Loopback Only" />
 </p>
 
 <p align="center">
-  <a href="README.md"><strong>English</strong></a> · <a href="README_ZH.md"><strong>简体中文</strong></a>
+  <a href="README.md"><strong>English</strong></a> · <a href="README_ZH.md"><strong>简体中文</strong></a> · <a href="CHANGELOG_ZH.md">更新日志</a>
 </p>
 
 ---
