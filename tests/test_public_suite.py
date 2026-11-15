@@ -181,7 +181,7 @@ class AcerolaOrionPublicSuite(unittest.TestCase):
             rpc.ConnectRpcClient(http_port=8080, csrf_token="tok", host="example.com")
 
     def test_02_version_and_model_pricing_math(self) -> None:
-        self.assertEqual(constants.APP_VERSION, "1.0.0")
+        self.assertEqual(constants.APP_VERSION, "1.1.0")
         c4 = constants.classify_model("Gemini 4 Carbon (High)")
         self.assertEqual(c4.family_id, "4c")
         self.assertAlmostEqual(c4.compute_usd(1_000_000, 0, 100_000, 1.0), 6.0)
@@ -704,6 +704,56 @@ class AcerolaOrionPublicSuite(unittest.TestCase):
                 time.sleep(0.02)
             self.assertFalse(app._refresh_busy)
             self.assertEqual(applied, [2])
+
+    def test_13_win32_tray_and_shortcut_clean_room(self) -> None:
+        from acerola_orion import win_tray
+
+        ns = cli_main.build_parser().parse_args(["panel", "--minimized"])
+        self.assertTrue(ns.minimized)
+        ns_sc = cli_main.build_parser().parse_args(["shortcut", "--remove"])
+        self.assertTrue(ns_sc.remove)
+
+        ico = panel_mod._get_icon_path()
+        self.assertTrue(ico.is_file())
+
+        if sys.platform == "win32":
+            woke: List[int] = []
+            cls_name = f"OrionPubTrayTest_{os.getpid()}_{time.time_ns()}"
+            tray = win_tray.Win32TrayController(
+                class_name=cls_name,
+                tooltip="Orion Public Test",
+                ico_path=ico,
+                on_open=lambda: woke.append(1),
+                menu_builder=lambda: [("Open", lambda: None)],
+                dispatch_ui=lambda cb: cb(),
+            )
+            try:
+                tray.start()
+                self.assertNotEqual(tray._hwnd, 0)
+                self.assertTrue(win_tray.signal_existing_instance(cls_name))
+                for _ in range(30):
+                    if woke:
+                        break
+                    time.sleep(0.02)
+                self.assertEqual(woke, [1])
+            finally:
+                tray.stop()
+
+            sc_dir = self.tmp_path / "start_menu"
+            res = win_tray.install_start_menu_shortcut(
+                shortcut_name="AcerolaOrionTest",
+                arguments="-m acerola_orion panel",
+                working_dir=self.tmp_path,
+                icon_path=ico,
+                app_id=panel_mod.APP_USER_MODEL_ID,
+                description="Unit test shortcut",
+                target_dir=sc_dir,
+            )
+            self.assertTrue(res["ok"])
+            self.assertTrue(Path(str(res["path"])).is_file())
+            rem = win_tray.remove_start_menu_shortcut("AcerolaOrionTest", target_dir=sc_dir)
+            self.assertTrue(rem["ok"])
+            self.assertTrue(rem["removed"])
 
 
 if __name__ == "__main__":

@@ -6,6 +6,16 @@
 
 日志格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本 2.0.0 (SemVer)](https://semver.org/lang/zh-CN/)。
 
+## [1.1.0] - 2026-11-15 — 原生系统托盘常驻、多尺寸高清图标与开始菜单集成
+
+### 新增
+- **零依赖原生 Win32 系统托盘驻留与休眠引擎（`acerola_orion/win_tray.py` & `acerola_orion/panel.py`）**：
+  - 基于纯标准库 `ctypes` 实现独立消息泵线程 `Shell_NotifyIconW` 托盘控制器（支持资源管理器重启 `TaskbarCreated` 自动重挂、悬停实时预览 `5h / 周` 配额百分比及右键快捷菜单）。
+  - 点击主控台右上角 `×` 自动转入右下角托盘静默休眠并暂停定时采样（待机 `0% CPU`），支持 `acerola-orion panel --minimized` 静默启动及跨进程单实例前置唤醒。
+- **多尺寸高清应用图标与开始菜单/任务栏独立身份（`assets/app.ico` & `acerola-orion shortcut`）**：
+  - 内置 9 档尺寸（`16px`–`256px`）高清透明 `.ico` 图标，绑定显式 `AppUserModelID`（`Trinity.AcerolaOrion.Panel`），脱离默认 Python 图标分组。
+  - 基于纯 `ctypes` COM 接口（`IShellLinkW` + `IPropertyStore` `PKEY_AppUserModel_ID`）新增 `acerola-orion shortcut [--remove]` 命令，一键注册无黑框 `pythonw.exe` 开始菜单与任务栏可固定应用入口，全程维持 `0` 第三方依赖（`13/13` 自动化测试全绿）。
+
 ## [1.0.0] - 2026-11-15 — 代号：`Acerola-Orion (雅赛劳拉莉昂)` · 正式版星象台发布
 
 ### 正式版晋升与边界锁定

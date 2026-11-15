@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zanex-dev/acerola-orion/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-12%2F12%20passing-brightgreen" alt="Tests" /></a>
-  <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v1.0.0-be123c" alt="Version v1.0.0" /></a>
+  <a href="https://github.com/zanex-dev/acerola-orion/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-13%2F13%20passing-brightgreen" alt="Tests" /></a>
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v1.1.0-be123c" alt="Version v1.1.0" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-e11d48.svg" alt="License: MIT" /></a>
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.10%2B%20(0%20deps)-3776AB.svg" alt="Python 3.10+" /></a>
   <img src="https://img.shields.io/badge/network-127.0.0.1%20loopback%20only-059669" alt="Loopback Only" />
@@ -77,8 +77,11 @@ acerola-orion ledger --days 14
 # 单独执行配额水位采样与幽灵掉点审计
 acerola-orion audit
 
-# 启动黑曜石绯红桌面可视化主控台
+# 启动黑曜石绯红桌面可视化主控台（点 × 自动缩入右下角托盘 0% CPU 休眠，支持 --minimized 静默启动）
 acerola-orion panel
+
+# 可选：一键注册 Windows 开始菜单与任务栏独立图标快捷方式（附加 --remove 可移除）
+acerola-orion shortcut
 ```
 
 ### 2. 可选：开机自启孤儿进程守卫（完全透明可逆）

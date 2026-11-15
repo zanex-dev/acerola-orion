@@ -160,7 +160,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_gd.add_argument("--json", action="store_true", help="输出结构化 JSON")
 
     # panel
-    sub.add_parser("panel", help="启动黑曜石绯红桌面可视化主控台")
+    p_pn = sub.add_parser("panel", help="启动黑曜石绯红桌面可视化主控台")
+    p_pn.add_argument("--minimized", action="store_true", help="启动后直接静默驻留右下角系统托盘")
+
+    # shortcut
+    p_sc = sub.add_parser("shortcut", help="注册或移除 Windows 开始菜单与任务栏可固定快捷方式")
+    p_sc.add_argument("--remove", action="store_true", help="移除已注册的开始菜单快捷方式")
+    p_sc.add_argument("--json", action="store_true", help="输出结构化 JSON")
 
     # install-launchers
     p_il = sub.add_parser("install-launchers", help="在 ~/workspaces/launchers 部署快捷启动器脚本")
@@ -260,7 +266,29 @@ def main(argv: Optional[List[str]] = None) -> int:
     if cmd == "panel":
         from .panel import launch_panel
 
-        return launch_panel()
+        return launch_panel(start_minimized=bool(getattr(args, "minimized", False)))
+
+    if cmd == "shortcut":
+        from .panel import APP_USER_MODEL_ID, _get_icon_path
+        from .win_tray import install_start_menu_shortcut, remove_start_menu_shortcut
+
+        pkg_root = Path(__file__).resolve().parent.parent
+        if getattr(args, "remove", False):
+            out_sc = remove_start_menu_shortcut(APP_CODENAME)
+        else:
+            out_sc = install_start_menu_shortcut(
+                shortcut_name=APP_CODENAME,
+                arguments="-m acerola_orion panel",
+                working_dir=pkg_root,
+                icon_path=_get_icon_path(),
+                app_id=APP_USER_MODEL_ID,
+                description=f"{APP_CODENAME} · 本地配额水位透视与内核退出守卫",
+            )
+        if getattr(args, "json", False):
+            print(json.dumps(out_sc, ensure_ascii=False, indent=2))
+        else:
+            print(f"✦ {out_sc.get('message')}")
+        return 0 if out_sc.get("ok") else 1
 
     if cmd == "install-launchers":
         written = deploy_agyrun_launchers()

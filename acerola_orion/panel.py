@@ -29,8 +29,20 @@ from .constants import (
 )
 from .guillotine import install_guard_autostart, uninstall_guard_autostart
 from .ledger import OrionLedger
+from pathlib import Path
 from .rpc import read_shared_file_lines
 from .telemetry import OrionTelemetryReport, collect_telemetry, invalidate_guard_probe_cache
+from .win_tray import (
+    MenuSpec,
+    Win32TrayController,
+    apply_tk_window_icon,
+    bring_tk_window_to_front,
+    set_app_user_model_id,
+    signal_existing_instance,
+)
+
+APP_USER_MODEL_ID = "Trinity.AcerolaOrion.Panel"
+TRAY_CLASS_NAME = "AcerolaOrionTrayHost_v1"
 
 # Palette: Obsidian + Kiss-Shot Crimson + Orion Cyan
 BG_ROOT = "#0c0a10"
@@ -61,28 +73,13 @@ def _enable_high_dpi() -> None:
                 pass
 
 
-def _activate_existing_panel_window() -> bool:
-    """If an identical-version panel window is already open on desktop, restore and focus it."""
-    if sys.platform != "win32":
-        return False
-    try:
-        user32 = ctypes.WinDLL("user32", use_last_error=True)
-        user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
-        user32.FindWindowW.restype = wintypes.HWND
-        user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
-        user32.ShowWindow.restype = wintypes.BOOL
-        user32.SetForegroundWindow.argtypes = [wintypes.HWND]
-        user32.SetForegroundWindow.restype = wintypes.BOOL
+def _get_icon_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "assets" / "app.ico"
 
-        hwnd = user32.FindWindowW(None, _panel_window_title())
-        if hwnd:
-            SW_RESTORE = 9
-            user32.ShowWindow(hwnd, SW_RESTORE)
-            user32.SetForegroundWindow(hwnd)
-            return True
-    except Exception:
-        pass
-    return False
+
+def _activate_existing_panel_window() -> bool:
+    """If an identical-version panel (or tray-resident instance) is already open, restore and focus it."""
+    return signal_existing_instance(TRAY_CLASS_NAME, _panel_window_title())
 
 
 class QuotaBarWidget(tk.Frame):
@@ -139,8 +136,14 @@ class QuotaBarWidget(tk.Frame):
 
 
 class AcerolaOrionApp(tk.Tk):
-    def __init__(self, auto_refresh_ms: int = 15000) -> None:
+    def __init__(
+        self,
+        auto_refresh_ms: int = 15000,
+        start_minimized: bool = False,
+        enable_tray: bool = True,
+    ) -> None:
         _enable_high_dpi()
+        set_app_user_model_id(APP_USER_MODEL_ID)
         super().__init__()
         self.auto_refresh_ms = auto_refresh_ms
         self._refresh_busy = False
@@ -150,6 +153,9 @@ class AcerolaOrionApp(tk.Tk):
         self._pending_refresh = False
         self._offline_streak = 0
         self._closing = False
+        self._hidden_to_tray = False
+        self._tray_hint_shown = False
+        self._tray: Optional[Win32TrayController] = None
         self._action_buttons: List[tk.Button] = []
         self._ledger = OrionLedger()
         self._last_report: Optional[OrionTelemetryReport] = None
@@ -161,6 +167,7 @@ class AcerolaOrionApp(tk.Tk):
             self._dpi_scale = 1.0
 
         self.title(_panel_window_title())
+        apply_tk_window_icon(self, _get_icon_path())
         sw = max(1024, self.winfo_screenwidth())
         sh = max(720, self.winfo_screenheight())
         win_w = min(self._px(1140), sw - 80)
@@ -177,19 +184,89 @@ class AcerolaOrionApp(tk.Tk):
         self._configure_styles()
         self._build_header()
         self._build_tabs()
-        self.after(150, self.refresh_all_async)
+
+        if enable_tray and sys.platform == "win32":
+            self._tray = Win32TrayController(
+                class_name=TRAY_CLASS_NAME,
+                tooltip=f"{APP_CODENAME} v{APP_VERSION} · 单击唤醒主控台",
+                ico_path=_get_icon_path(),
+                on_open=self.restore_from_tray,
+                menu_builder=self._build_tray_menu,
+                dispatch_ui=self._ui_call,
+            )
+            self._tray.start()
+
         self.after(50, self._pump_ui_queue)
-        self._schedule_auto_refresh()
+        if start_minimized and self._tray is not None and self._tray.active:
+            self.hide_to_tray(notify=False)
+            self.after(300, lambda: self.refresh_all_async(silent=True))
+        else:
+            self.after(150, self.refresh_all_async)
+            self._schedule_auto_refresh()
 
     def _px(self, base: int) -> int:
         return int(round(base * self._dpi_scale))
 
-    def _on_close(self) -> None:
+    def _build_tray_menu(self) -> List[MenuSpec]:
+        return [
+            (f"✦ 打开主控台 ({APP_CODENAME})", self.restore_from_tray),
+            None,
+            ("🔍 立即采样配额水位快照", lambda: self._run_action("托盘 · 采样配额水位快照", self._sample_watermark_now)),
+            ("🛡️ 启用并注册开机自启守卫", lambda: self._run_action("托盘 · 部署断头台内核守卫", install_guard_autostart)),
+            ("⏹️ 停用并卸载断头台守卫", lambda: self._run_action("托盘 · 停用断头台内核守卫", uninstall_guard_autostart)),
+            None,
+            ("✕ 彻底退出主控台", self.exit_app),
+        ]
+
+    def hide_to_tray(self, notify: bool = True) -> None:
+        if self.__dict__.get("_closing"):
+            return
+        tray = self.__dict__.get("_tray")
+        if tray is None or not tray.active:
+            self.exit_app()
+            return
+        self._hidden_to_tray = True
+        try:
+            self.withdraw()
+        except Exception:
+            pass
+        if notify and not self.__dict__.get("_tray_hint_shown"):
+            self._tray_hint_shown = True
+            tray.notify_balloon(
+                f"{APP_CODENAME} 已驻留托盘",
+                "主控台已转入右下角静默休眠（0% CPU）。单击托盘图标唤醒，右键可管理守卫或彻底退出。",
+            )
+
+    def restore_from_tray(self) -> None:
+        if self.__dict__.get("_closing"):
+            return
+        was_hidden = bool(self.__dict__.get("_hidden_to_tray"))
+        self._hidden_to_tray = False
+        bring_tk_window_to_front(self)
+        if was_hidden:
+            self.refresh_all_async(silent=True)
+            self._schedule_auto_refresh()
+
+    def exit_app(self) -> None:
         self._closing = True
+        self._hidden_to_tray = False
+        tray = self.__dict__.get("_tray")
+        if tray is not None:
+            try:
+                tray.stop()
+            except Exception:
+                pass
         try:
             self.destroy()
         except Exception:
             pass
+
+    def _on_close(self) -> None:
+        tray = self.__dict__.get("_tray")
+        if tray is not None and tray.active:
+            self.hide_to_tray(notify=True)
+            return
+        self.exit_app()
 
     def _ui_call(self, cb: Callable[[], None]) -> None:
         """Thread-safe UI marshalling: worker threads enqueue callbacks drained on the Tk main thread."""
@@ -231,7 +308,8 @@ class AcerolaOrionApp(tk.Tk):
             except Exception:
                 pass
         try:
-            self.after(50, self._pump_ui_queue)
+            delay_ms = 400 if self.__dict__.get("_hidden_to_tray") else 50
+            self.after(delay_ms, self._pump_ui_queue)
         except Exception:
             pass
 
@@ -311,8 +389,11 @@ class AcerolaOrionApp(tk.Tk):
         )
         self.lbl_sync_time.pack(anchor="e", pady=(0, 4))
 
+        btn_row = tk.Frame(right, bg="#120914")
+        btn_row.pack(anchor="e")
+
         self.btn_refresh = tk.Button(
-            right,
+            btn_row,
             text="🔃 立即全量刷新",
             command=lambda: self.refresh_all_async(silent=False),
             bg=BG_CARD_ALT,
@@ -325,7 +406,23 @@ class AcerolaOrionApp(tk.Tk):
             font=("Microsoft YaHei UI", 9, "bold"),
             cursor="hand2",
         )
-        self.btn_refresh.pack(anchor="e")
+        self.btn_refresh.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.btn_exit_app = tk.Button(
+            btn_row,
+            text="✕ 退出",
+            command=self.exit_app,
+            bg="#26131f",
+            fg=FG_MUTED,
+            activebackground=ACCENT_CRIMSON,
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=10,
+            pady=4,
+            font=("Microsoft YaHei UI", 9),
+            cursor="hand2",
+        )
+        self.btn_exit_app.pack(side=tk.LEFT)
 
     def _build_tabs(self) -> None:
         self.notebook = ttk.Notebook(self)
@@ -632,7 +729,7 @@ class AcerolaOrionApp(tk.Tk):
             b.configure(state=st)
 
     def _schedule_auto_refresh(self) -> None:
-        if self.auto_refresh_ms > 0 and not self._closing:
+        if self.auto_refresh_ms > 0 and not self._closing and not self.__dict__.get("_hidden_to_tray"):
             self.after(self._next_auto_delay_ms(), self._on_auto_timer)
 
     def _next_auto_delay_ms(self) -> int:
@@ -644,7 +741,7 @@ class AcerolaOrionApp(tk.Tk):
         return int(min(max(base, 120_000), base * (2 ** min(streak, 3))))
 
     def _on_auto_timer(self) -> None:
-        if self._closing:
+        if self._closing or self.__dict__.get("_hidden_to_tray"):
             return
         if not self._refresh_busy and not self._action_busy:
             self.refresh_all_async(silent=True)
@@ -884,12 +981,18 @@ class AcerolaOrionApp(tk.Tk):
         self.txt_diag.insert(tk.END, "=== [language_server.log 最新尾部流 (无锁只读)] ===\n")
         self.txt_diag.insert(tk.END, "\n".join(ls_tail) + "\n")
 
-        if not silent:
-            def _pct_txt(bid: str) -> str:
-                b = bmap.get(bid)
-                v = getattr(b, "remaining_pct", math.nan) if b is not None else math.nan
-                return f"{v:.2f}%" if isinstance(v, (int, float)) and math.isfinite(v) else "--.--%"
+        def _pct_txt(bid: str) -> str:
+            b = bmap.get(bid)
+            v = getattr(b, "remaining_pct", math.nan) if b is not None else math.nan
+            return f"{v:.2f}%" if isinstance(v, (int, float)) and math.isfinite(v) else "--.--%"
 
+        tray = self.__dict__.get("_tray")
+        if tray is not None and tray.active:
+            tray.update_tooltip(
+                f"{APP_CODENAME} · 5h: {_pct_txt('gemini-5h')} | 周: {_pct_txt('gemini-weekly')}"
+            )
+
+        if not silent:
             self._append_console(
                 f"✓ 采样完成: Tier={r.paid_tier_id or r.user_tier_id or '-'} "
                 f"Gemini-5h={_pct_txt('gemini-5h')} "
@@ -897,10 +1000,11 @@ class AcerolaOrionApp(tk.Tk):
             )
 
 
-def launch_panel() -> int:
+def launch_panel(start_minimized: bool = False) -> int:
     _enable_high_dpi()
+    set_app_user_model_id(APP_USER_MODEL_ID)
     if _activate_existing_panel_window():
         return 0
-    app = AcerolaOrionApp()
+    app = AcerolaOrionApp(start_minimized=start_minimized)
     app.mainloop()
     return 0

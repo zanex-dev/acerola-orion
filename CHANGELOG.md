@@ -6,6 +6,16 @@ All notable changes to **`acerola-orion`** will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-11-15 — Native System Tray Residency, Multi-Scale Icon & Start Menu Integration
+
+### Added
+- **Zero-Dependency Win32 System Tray Residency (`acerola_orion/win_tray.py` & `acerola_orion/panel.py`)**:
+  - Added native `Shell_NotifyIconW` system tray controller running on a dedicated Win32 message-pump thread (`0%` idle CPU, automatic `TaskbarCreated` re-registration on Explorer restarts, live `5h` / `Weekly` quota hover tooltip, and right-click quick actions).
+  - Closing the desktop console (`×`) now smoothly minimizes into the system tray while pausing background UI refresh timers (`0%` CPU sleep) until restored; added `--minimized` startup flag and cross-instance `AllowSetForegroundWindow` + `PostMessageW` tray wakeup.
+- **Multi-Size High-DPI Application Icon & Taskbar Identity (`assets/app.ico` & `acerola-orion shortcut`)**:
+  - Bundled 9-scale (`16px`–`256px`) RGBA `.ico` artwork and bound `SetCurrentProcessExplicitAppUserModelID` (`Trinity.AcerolaOrion.Panel`) for clean, ungrouped Windows Taskbar identity.
+  - Added pure-`ctypes` COM (`IShellLinkW` + `IPropertyStore` `PKEY_AppUserModel_ID`) `acerola-orion shortcut [--remove]` CLI command to register `pythonw.exe` console-free Start Menu & Taskbar-pinnable shortcuts with zero third-party dependencies (`13/13` verification scenarios passing).
+
 ## [1.0.0] - 2026-11-15 — Codename: `Acerola-Orion (雅赛劳拉莉昂)` · Stable Observatory Release
 
 ### Changed & Promoted
