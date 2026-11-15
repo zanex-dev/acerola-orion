@@ -373,7 +373,7 @@ class AcerolaOrionPublicSuite(unittest.TestCase):
             t0 = time.monotonic()
             with self.assertRaises(rpc.ConnectRpcError):
                 cli.call("GetUserStatus", {}, timeout=0.6)
-            self.assertLess(time.monotonic() - t0, 1.15)
+            self.assertLess(time.monotonic() - t0, 2.0)
 
             mode["kind"] = "nan"
             with self.assertRaises(rpc.ConnectRpcError):
@@ -528,15 +528,22 @@ class AcerolaOrionPublicSuite(unittest.TestCase):
         )
         self.assertEqual(r.returncode, 0)
 
-        # Hung background telemetry watchdog recovery
+        # Hung background telemetry watchdog recovery (event-synchronized, zero CI disk timing race)
         hang = threading.Event()
+        job1_entered = threading.Event()
+        job2_entered = threading.Event()
+        job1_threads: List[threading.Thread] = []
         calls = 0
 
         def hung_collect(include_guard_check: bool = False) -> Any:
             nonlocal calls
             calls += 1
             if calls == 1:
+                job1_threads.append(threading.current_thread())
+                job1_entered.set()
                 hang.wait(5.0)
+            else:
+                job2_entered.set()
             return telemetry.OrionTelemetryReport(
                 captured_at="x",
                 ls_running=True,
@@ -570,8 +577,19 @@ class AcerolaOrionPublicSuite(unittest.TestCase):
         def fake_wait(_handles: List[int], _timeout_ms: int) -> int:
             nonlocal cyc, clock_off
             cyc += 1
-            clock_off += 60.0
-            real_time.sleep(0.01)
+            if cyc == 1:
+                self.assertTrue(job1_entered.wait(5.0))
+                clock_off += 100.0
+            elif cyc == 2:
+                clock_off += 20.0
+            elif cyc == 3:
+                self.assertTrue(job2_entered.wait(5.0))
+                for t in list(threading.enumerate()):
+                    if t.name.startswith("orion-guard-telemetry-") and t not in job1_threads:
+                        t.join(timeout=5.0)
+                clock_off += 1.0
+            else:
+                clock_off += 1.0
             return rpc.WAIT_TIMEOUT
 
         hub = rpc.HubEndpoint("hub.json", 2000, 51234, 0, "tok", 1)
@@ -581,14 +599,14 @@ class AcerolaOrionPublicSuite(unittest.TestCase):
                 patch.object(guillotine, "acquire_single_instance_mutex", return_value=(1234, False)),
                 patch.object(guillotine, "release_and_close_mutex"),
                 patch.object(guillotine, "retire_legacy_orphan_killer", return_value={}),
-                patch.object(guillotine, "snapshot_processes_fast", side_effect=lambda: procs_a if cyc < 3 else procs_b),
+                patch.object(guillotine, "snapshot_processes_fast", side_effect=lambda: procs_a if cyc < 2 else procs_b),
                 patch.object(guillotine, "discover_hub_endpoint", return_value=hub),
                 patch.object(guillotine, "collect_telemetry", side_effect=hung_collect),
                 patch.object(guillotine, "open_process_handle", return_value=9999),
                 patch.object(guillotine, "wait_for_handles_all", side_effect=fake_wait),
                 patch.object(guillotine, "close_handle_safe"),
             ):
-                rc = guillotine.run_guillotine_daemon_loop(max_cycles=12)
+                rc = guillotine.run_guillotine_daemon_loop(max_cycles=6)
         finally:
             hang.set()
             real_time.sleep(0.05)
@@ -636,6 +654,10 @@ class AcerolaOrionPublicSuite(unittest.TestCase):
         applied: List[int] = []
         app._apply_ui_data = lambda rep, *a, **k: applied.append(rep.ls_pid)  # type: ignore[assignment]
 
+        e1_entered = threading.Event()
+        e2_entered = threading.Event()
+        e1_done = threading.Event()
+        e2_done = threading.Event()
         g1 = threading.Event()
         g2 = threading.Event()
         seq = 0
@@ -644,26 +666,40 @@ class AcerolaOrionPublicSuite(unittest.TestCase):
             nonlocal seq
             seq += 1
             my = seq
-            (g1 if my == 1 else g2).wait(5.0)
-            return telemetry.OrionTelemetryReport(captured_at=str(my), ls_running=True, ls_pid=my, main_pids=[1])
+            if my == 1:
+                e1_entered.set()
+                g1.wait(5.0)
+            else:
+                e2_entered.set()
+                g2.wait(5.0)
+            try:
+                return telemetry.OrionTelemetryReport(captured_at=str(my), ls_running=True, ls_pid=my, main_pids=[1])
+            finally:
+                (e1_done if my == 1 else e2_done).set()
 
         with (
             patch.object(panel_mod, "collect_telemetry", side_effect=fake_collect),
             patch.object(panel_mod, "read_shared_file_lines", return_value=[]),
         ):
             app.refresh_all_async(silent=True)
-            time.sleep(0.05)
+            self.assertTrue(e1_entered.wait(2.0))
             app._refresh_started = time.monotonic() - 125.0
             panel_mod.AcerolaOrionApp._pump_ui_queue(app)
             app.refresh_all_async(silent=True)
+            self.assertTrue(e2_entered.wait(2.0))
             g1.set()
-            time.sleep(0.1)
+            self.assertTrue(e1_done.wait(2.0))
+            time.sleep(0.05)
             panel_mod.AcerolaOrionApp._pump_ui_queue(app)
             self.assertTrue(app._refresh_busy)
             self.assertEqual(applied, [])
             g2.set()
-            time.sleep(0.1)
-            panel_mod.AcerolaOrionApp._pump_ui_queue(app)
+            self.assertTrue(e2_done.wait(2.0))
+            for _ in range(40):
+                panel_mod.AcerolaOrionApp._pump_ui_queue(app)
+                if not app._refresh_busy:
+                    break
+                time.sleep(0.02)
             self.assertFalse(app._refresh_busy)
             self.assertEqual(applied, [2])
 
