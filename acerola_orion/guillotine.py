@@ -299,16 +299,20 @@ def install_guard_autostart() -> Dict[str, Any]:
     vbs_arg_quoted = _ps_single_quote(f'"{launcher_vbs}"')
     task_name_quoted = _ps_single_quote(SCHEDULED_TASK_NAME)
     ps_cmd = (
+        f"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+        f"$u = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name; "
         f"$act = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument {vbs_arg_quoted}; "
-        f"$trg = New-ScheduledTaskTrigger -AtLogOn; "
+        f"$trg = New-ScheduledTaskTrigger -AtLogOn -User $u; "
         f"$set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0; "
-        f"Register-ScheduledTask -TaskName {task_name_quoted} -Action $act -Trigger $trg -Settings $set -Force | Out-Null; "
+        f"Register-ScheduledTask -TaskName {task_name_quoted} -Action $act -Trigger $trg -Settings $set -Force -ErrorAction Stop | Out-Null; "
         f"Start-ScheduledTask -TaskName {task_name_quoted}"
     )
     r = subprocess.run(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=8.0,
         creationflags=creationflags,
     )
@@ -323,6 +327,7 @@ def install_guard_autostart() -> Dict[str, Any]:
         bg_res = start_guard_background() if not mutex_up else {"ok": True, "via": "scheduled_task"}
     else:
         bg_res = start_guard_background()
+    err_detail = (r.stderr or r.stdout or "").strip()
     return {
         "ok": task_ok and bool(bg_res.get("ok")),
         "scheduled_task": SCHEDULED_TASK_NAME if task_ok else "failed",
@@ -332,7 +337,7 @@ def install_guard_autostart() -> Dict[str, Any]:
         "message": (
             f"已注册开机登录计划任务 [{SCHEDULED_TASK_NAME}] 并启动零轮询内核守卫！"
             if task_ok
-            else f"自启任务注册异常 ({r.stderr.strip()})，但后台守卫状态: {bg_res.get('message')}"
+            else f"自启任务注册异常 ({err_detail})，但后台守卫状态: {bg_res.get('message')}"
         ),
     }
 

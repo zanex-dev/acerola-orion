@@ -6,6 +6,17 @@
 
 日志格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本 2.0.0 (SemVer)](https://semver.org/lang/zh-CN/)。
 
+## [1.2.0] - 2026-11-16 — 猎户座星盘计时仪 UI 焕新与极简专注模式
+
+### 新增与优化
+- **猎户座双星轨精密计时仪桌面 UI（`acerola_orion/panel.py`）**：
+  - 全新矢量自绘 **猎户座星盘计时仪（Orion Astrolabe & Chronograph）**：60 格腕表刻度圈 + 外圈 `5h 滚动池` 高亮弧 + 内圈 `Weekly 周总池` 星轨弧 + **金针时间流逝基准**（实时对比窗口剩余时间与剩余配额，直观标识盈余巡航与超速透支），配合原生 Win32 `DwmSetWindowAttribute` 沉浸暗黑标题栏与全暗色滚动条。
+  - 新增支持鼠标悬停十字准星读数的矢量统计图组件（`OrionChartWidget`），覆盖 24 小时配额水位轨迹、近 14 天等效美元消耗柱状图与旁路风控附加耗时示波器。
+- **可选「极简专注模式」（`acerola-orion panel --zen`）**：
+  - 支持右上角一键切换、托盘右键切换或命令行 `--zen / --full / --reload` 启动（自动记忆至 `ui_prefs.json`），同屏严格只展示 **1 个核心指标表盘 + 1 张对应统计趋势图**，兼顾极客全量审计与清爽直观浏览。
+- **遥测超时去噪与多池曲线隔离（`acerola_orion/telemetry.py` & `acerola_orion/ledger.py`）**：
+  - 剥离客户端后台 `play.googleapis.com/log` / `firebaselogging` 埋点上报被代理拦截引发的超时误计，并在 `get_recent_quota_series()` 中引入周重置指纹同池过滤，消除多池交替采样的曲线跳刺（`14/14` 自动化安全与功能测试全绿）。
+
 ## [1.1.0] - 2026-11-15 — 原生系统托盘常驻、多尺寸高清图标与开始菜单集成
 
 ### 新增

@@ -6,6 +6,17 @@ All notable changes to **`acerola-orion`** will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-11-16 — Orion Astrolabe Chronograph UI & Zen Focus Mode
+
+### Added & Refined
+- **Orion Astrolabe & Chronograph Desktop UI (`acerola_orion/panel.py`)**:
+  - Redesigned the desktop observatory with custom vector **Dual Orion Astrolabe Chronographs** (`5h` outer arc, `Weekly` inner orbital ring, 60-tick precision watch bezel, and **Golden Time-Pace Marker** computing live quota surplus vs. overburn against window elapsed time).
+  - Added interactive vector telemetry & spend charts (`OrionChartWidget` with hover crosshair inspection) covering 24h pool-isolated quota trajectories, 14-day daily USD spend bars, and live sidecar monitor latency waveforms, paired with native Win32 `DwmSetWindowAttribute` immersive dark titlebar & custom dark scrollbars.
+- **Optional Zen / Simplified Focus Mode (`acerola-orion panel --zen`)**:
+  - Added one-click toggleable **Zen Focus Mode** (persisted in `ui_prefs.json` and accessible via CLI `--zen` / `--full` / `--reload` or system tray menu) displaying strictly **1 Hero Metric + 1 Statistical Chart** at a time (`Gemini`, `Claude/3P`, `Today Spend`, or `Smoothness`).
+- **Telemetry & Series Precision Refinements (`acerola_orion/telemetry.py` & `acerola_orion/ledger.py`)**:
+  - Excluded background Google Clearcut analytics timeouts (`play.googleapis.com/log`, `firebaselogging`) from `sidecar.timeout_count` so only genuine sidecar/RPC timeouts are counted, and added weekly-reset pool fingerprinting in `get_recent_quota_series()` to eliminate cross-pool spikes (`14/14` verification scenarios passing).
+
 ## [1.1.0] - 2026-11-15 — Native System Tray Residency, Multi-Scale Icon & Start Menu Integration
 
 ### Added

@@ -1115,6 +1115,96 @@ class OrionLedger:
         self._compact_poll_spam_in_conn(conn)
         return int(cur.rowcount or 0)
 
+    def get_recent_quota_series(
+        self,
+        hours: float = 24.0,
+        max_points: int = 80,
+        active_gemini_wk_reset: str = "",
+        active_p3_wk_reset: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Read recent non-future quota snapshots for UI watermark trajectory plotting (pool-isolated)."""
+        span_h = max(1.0, min(168.0, float(hours) if math.isfinite(float(hours)) else 24.0))
+        cap_pts = _clamp_int(max_points, 8, 240, 80)
+        future_cap = time.time() + self.FUTURE_SKEW_TOLERANCE_SEC
+        with self._connect() as conn:
+            anchor = self._robust_anchor_in_conn(conn)
+            if anchor is None:
+                return []
+            lo = float(anchor) - span_h * 3600.0
+            rows = conn.execute(
+                "SELECT ts_epoch, gemini_5h, gemini_weekly, gemini_weekly_reset, "
+                "p3_5h, p3_weekly, p3_weekly_reset "
+                "FROM quota_snapshots WHERE ts_epoch >= ? AND ts_epoch <= ? "
+                "ORDER BY ts_epoch ASC, id ASC",
+                (lo, future_cap),
+            ).fetchall()
+        if not rows:
+            return []
+
+        gem_rst_target = active_gemini_wk_reset.strip()
+        if not gem_rst_target:
+            for r in reversed(rows):
+                cand = str(r["gemini_weekly_reset"] or "").strip()
+                if cand:
+                    gem_rst_target = cand
+                    break
+
+        p3_rst_target = active_p3_wk_reset.strip()
+        if not p3_rst_target:
+            for r in reversed(rows):
+                cand = str(r["p3_weekly_reset"] or "").strip()
+                if cand:
+                    p3_rst_target = cand
+                    break
+
+        def _pct_or_none(v: Any) -> Optional[float]:
+            if v is None:
+                return None
+            try:
+                fv = float(v) * 100.0
+            except (TypeError, ValueError):
+                return None
+            return round(max(0.0, min(100.0, fv)), 4) if math.isfinite(fv) else None
+
+        parsed: List[Dict[str, Any]] = []
+        for r in rows:
+            try:
+                ep = float(r["ts_epoch"])
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(ep):
+                continue
+            r_gem_rst = str(r["gemini_weekly_reset"] or "").strip()
+            r_p3_rst = str(r["p3_weekly_reset"] or "").strip()
+            gem_match = (not gem_rst_target) or (not r_gem_rst) or (r_gem_rst == gem_rst_target)
+            p3_match = (not p3_rst_target) or (not r_p3_rst) or (r_p3_rst == p3_rst_target)
+
+            g5_v = _pct_or_none(r["gemini_5h"]) if gem_match else None
+            gw_v = _pct_or_none(r["gemini_weekly"]) if gem_match else None
+            p5_v = _pct_or_none(r["p3_5h"]) if p3_match else None
+            pw_v = _pct_or_none(r["p3_weekly"]) if p3_match else None
+            if g5_v is None and gw_v is None and p5_v is None and pw_v is None:
+                continue
+
+            label = datetime.fromtimestamp(ep).strftime("%H:%M")
+            parsed.append(
+                {
+                    "ts_epoch": ep,
+                    "label": label,
+                    "gemini_5h": g5_v,
+                    "gemini_weekly": gw_v,
+                    "p3_5h": p5_v,
+                    "p3_weekly": pw_v,
+                }
+            )
+        if len(parsed) <= cap_pts:
+            return parsed
+        # Preserve endpoints and evenly sample interior points
+        step = (len(parsed) - 1) / float(cap_pts - 1)
+        sampled = [parsed[int(round(i * step))] for i in range(cap_pts - 1)]
+        sampled.append(parsed[-1])
+        return sampled
+
     def compute_rate_audit(self) -> RateAuditReport:
         self._ensure_synced()
         audit = RateAuditReport()

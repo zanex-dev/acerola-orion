@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zanex-dev/acerola-orion/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-13%2F13%20passing-brightgreen" alt="Tests" /></a>
-  <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v1.1.0-be123c" alt="Version v1.1.0" /></a>
+  <a href="https://github.com/zanex-dev/acerola-orion/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-14%2F14%20passing-brightgreen" alt="Tests" /></a>
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v1.2.0-be123c" alt="Version v1.2.0" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-e11d48.svg" alt="License: MIT" /></a>
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.10%2B%20(0%20deps)-3776AB.svg" alt="Python 3.10+" /></a>
   <img src="https://img.shields.io/badge/network-127.0.0.1%20loopback%20only-059669" alt="Loopback Only" />
@@ -51,8 +51,9 @@ Select-String -Path .\acerola_orion\*.py -Pattern "HTTPConnection|socket|subproc
    - Pairs 7-decimal quota watermarks against local token deltas to detect zero-chat offline **Phantom Drains** and estimate implied pool capacity.
 3. **Acerola-Guillotine (`acerola_orion/guillotine.py`)**
    - Zero-polling (`0.00%` CPU) Win32 kernel `SYNCHRONIZE` handle guard (`WaitForMultipleObjects`) anchored to the root Electron UI process — never false-triggers on window minimize/tray, and terminates lingering orphan `language_server*.exe` processes in `<1ms` upon real app exit (with same-handle executable image verification) to prevent unwanted post-close background summarization token drain.
-4. **Desktop Console & System Tray (`acerola_orion/panel.py` & `acerola_orion/win_tray.py`)**
-   - Native Obsidian/Crimson High-DPI `tkinter` dashboard with multi-size `.ico` branding, explicit `AppUserModelID` taskbar grouping, single-instance foreground wakeup, and zero-CPU close-to-tray residency (live 7-decimal quota hover tooltip + right-click guard controls).
+4. **Orion Astrolabe Desktop Console & System Tray (`acerola_orion/panel.py` & `acerola_orion/win_tray.py`)**
+   - Native Win32 DWM immersive dark Obsidian/Crimson High-DPI dashboard featuring **Dual Orion Astrolabe Chronographs** (`5h` outer arc + `Weekly` inner orbital ring + **Golden Time-Pace Marker** for instant Surplus vs. Overburn comparison) and interactive 24h trajectory / 14-day spend vector charts;
+   - One-click toggle between **Full Observatory Mode** and **Zen Focus Mode (`--zen`)** — presenting strictly **1 Hero Metric + 1 Statistical Chart** at a time for zero-clutter monitoring, alongside zero-CPU close-to-tray residency.
 
 ---
 
@@ -67,7 +68,8 @@ pip install -e . --no-deps
 acerola-orion status
 acerola-orion ledger --days 14
 acerola-orion audit
-acerola-orion panel
+acerola-orion panel               # Launch Orion Astrolabe desktop observatory
+acerola-orion panel --zen         # Launch in Zen Focus Mode (1 Hero Metric + 1 Chart)
 acerola-orion panel --minimized   # Start directly in the Windows system tray
 acerola-orion shortcut            # Register Windows Start Menu & Taskbar-pinnable app shortcut
 

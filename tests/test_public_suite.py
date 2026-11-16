@@ -181,7 +181,7 @@ class AcerolaOrionPublicSuite(unittest.TestCase):
             rpc.ConnectRpcClient(http_port=8080, csrf_token="tok", host="example.com")
 
     def test_02_version_and_model_pricing_math(self) -> None:
-        self.assertEqual(constants.APP_VERSION, "1.1.0")
+        self.assertEqual(constants.APP_VERSION, "1.2.0")
         c4 = constants.classify_model("Gemini 4 Carbon (High)")
         self.assertEqual(c4.family_id, "4c")
         self.assertAlmostEqual(c4.compute_usd(1_000_000, 0, 100_000, 1.0), 6.0)
@@ -754,6 +754,115 @@ class AcerolaOrionPublicSuite(unittest.TestCase):
             rem = win_tray.remove_start_menu_shortcut("AcerolaOrionTest", target_dir=sc_dir)
             self.assertTrue(rem["ok"])
             self.assertTrue(rem["removed"])
+
+    def test_14_astrolabe_ui_zen_mode_and_quota_series(self) -> None:
+        ns_zen = cli_main.build_parser().parse_args(["panel", "--zen"])
+        self.assertTrue(ns_zen.zen)
+        ns_full = cli_main.build_parser().parse_args(["panel", "--full"])
+        self.assertTrue(ns_full.full)
+
+        # Verify ledger.get_recent_quota_series
+        led = ledger_mod.OrionLedger(
+            db_path=self.tmp_path / "ui_series.db",
+            brain_dir=self.tmp_path / "empty_brain",
+            annotations_dir=self.tmp_path / "empty_ann",
+        )
+        r_sample = telemetry.OrionTelemetryReport(
+            captured_at="2026-11-16 11:00:00",
+            ls_running=True,
+            ls_pid=4321,
+            main_pids=[1234],
+            paid_tier_id="g1-ultra-tier",
+            paid_tier_name="Google AI Ultra",
+            quota_buckets=[
+                telemetry.QuotaBucketView("G", "gemini-5h", "5h", "18000s", 0.8341928, 83.41928, "2030-01-01T00:00:00Z", "2小时 14分"),
+                telemetry.QuotaBucketView("G", "gemini-weekly", "wk", "604800s", 0.9108, 91.08, "2030-01-05T00:00:00Z", "4天 11小时"),
+                telemetry.QuotaBucketView("P", "3p-5h", "3p5h", "18000s", 0.4125, 41.25, "2030-01-01T00:00:00Z", "48分钟"),
+                telemetry.QuotaBucketView("P", "3p-weekly", "3pwk", "604800s", 0.642, 64.2, "2030-01-05T00:00:00Z", "3天 2小时"),
+            ],
+            log_stats=telemetry.LogCongestionStats(
+                http_429_503_count=1,
+                sidecar=telemetry.SidecarMonitorStats(eval_count=4, avg_ms=320.0, max_ms=610.0, recent_durations_ms=[210.0, 340.0, 610.0, 120.0]),
+            ),
+        )
+        self.assertTrue(led.record_quota_from_telemetry(r_sample, event_type="t1", min_interval_sec=0.0))
+        # Interleave a secondary pool row with a different weekly reset timestamp (e.g. multi-account spike)
+        r_other_pool = telemetry.OrionTelemetryReport(
+            captured_at="2026-11-16 11:01:00",
+            ls_running=True,
+            ls_pid=4322,
+            main_pids=[1234],
+            quota_buckets=[
+                telemetry.QuotaBucketView("G", "gemini-5h", "5h", "18000s", 1.0, 100.0, "2030-01-01T02:00:00Z", "5h"),
+                telemetry.QuotaBucketView("G", "gemini-weekly", "wk", "604800s", 0.5635, 56.35, "2030-01-02T00:00:00Z", "1d"),
+            ],
+        )
+        self.assertTrue(led.record_quota_from_telemetry(r_other_pool, event_type="t2", min_interval_sec=0.0))
+        q_series = led.get_recent_quota_series(hours=24.0, active_gemini_wk_reset="2030-01-05T00:00:00Z")
+        self.assertEqual(len(q_series), 1)
+        self.assertAlmostEqual(q_series[0]["gemini_5h"], 83.4193, places=3)
+
+        # Verify play.googleapis.com/log Clearcut timeouts do NOT false-trigger sidecar.timeout_count
+        log_stats = telemetry.analyze_logs(
+            [
+                'E1116 11:00:00 client.go:98] Post "https://play.googleapis.com/log": context deadline exceeded',
+                "E1116 11:00:05 mon.go:42] LLM_MONITOR_LLM_CALL_TIMEOUT: sir_flash_lite exceeded 10s",
+            ],
+            [],
+        )
+        self.assertEqual(log_stats.sidecar.timeout_count, 1)
+
+        # Instantiate real Tk Astrolabe UI inside isolated test session (skip gracefully on headless CI without Tcl/Tk display)
+        import tkinter as tk
+
+        try:
+            with patch.object(panel_mod.AcerolaOrionApp, "refresh_all_async", lambda self, silent=False: None):
+                app = panel_mod.AcerolaOrionApp(auto_refresh_ms=0, enable_tray=False, initial_mode="full")
+        except tk.TclError as exc:
+            self.skipTest(f"Tk display unavailable in headless environment: {exc}")
+            return
+        try:
+            app._last_quota_series = q_series
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            daily_rows = [
+                ledger_mod.DailyUsageRow(today_str, 3, 28, 120_000, 900_000, 45_000, 1.58, 0.79, 2.37),
+            ]
+            audit_rep = led.compute_rate_audit()
+            app._apply_ui_data(r_sample, daily_rows, [], [], audit_rep, ["guard ok"], ["ls ok"], silent=False)
+            app.update_idletasks()
+            app.dial_gemini._redraw()
+            app.dial_claude._redraw()
+            app.hub_chart._redraw()
+            self.assertGreater(len(app.dial_gemini.canvas.find_all()), 20)
+            self.assertGreater(len(app.hub_chart.canvas.find_all()), 5)
+
+            # Switch to Zen / Simplified Mode and cycle through all 4 single-metric + single-chart focuses
+            app.toggle_view_mode("zen")
+            self.assertEqual(app._view_mode, "zen")
+            for mk in ("gemini", "claude", "spend", "latency"):
+                app.select_zen_metric(mk)
+                app.update_idletasks()
+                app.zen_dial._redraw()
+                app.zen_chart._redraw()
+                self.assertGreater(len(app.zen_dial.canvas.find_all()), 20)
+                self.assertGreater(len(app.zen_chart.canvas.find_all()), 3)
+
+            # Verify persisted UI prefs
+            saved_prefs = panel_mod._load_ui_prefs()
+            self.assertEqual(saved_prefs["view_mode"], "zen")
+            self.assertEqual(saved_prefs["zen_metric"], "latency")
+
+            # Switch back to Full Mode and cycle tabs & chart modes
+            app.toggle_view_mode("full")
+            self.assertEqual(app._view_mode, "full")
+            for hk in ("gemini", "claude", "spend"):
+                app.select_hub_chart(hk)
+                app.hub_chart._redraw()
+            for tk_key in ("ledger", "diag", "hub"):
+                app.select_full_tab(tk_key)
+                app.update_idletasks()
+        finally:
+            app.exit_app()
 
 
 if __name__ == "__main__":

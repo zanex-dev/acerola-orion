@@ -322,7 +322,11 @@ def _fold_ls_lines(st: _LsLogCursorState, lines: Sequence[str]) -> None:
         if has_http_hint and _LOG_HTTP_ERR_RE.search(line):
             st.http_429_503_count += 1
 
-        if "LLM_MONITOR_LLM_CALL_TIMEOUT" in line or "context deadline exceeded" in line:
+        if "LLM_MONITOR_LLM_CALL_TIMEOUT" in line or (
+            "context deadline exceeded" in line
+            and "play.googleapis.com/log" not in line
+            and "firebaselogging" not in line
+        ):
             short = line.strip()
             if len(short) > 140:
                 short = short[-140:]

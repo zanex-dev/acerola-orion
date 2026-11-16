@@ -160,8 +160,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_gd.add_argument("--json", action="store_true", help="输出结构化 JSON")
 
     # panel
-    p_pn = sub.add_parser("panel", help="启动黑曜石绯红桌面可视化主控台")
+    p_pn = sub.add_parser("panel", help="启动猎户座星盘桌面主控台 (支持全盘星轨模式与极简专注模式切换)")
     p_pn.add_argument("--minimized", action="store_true", help="启动后直接静默驻留右下角系统托盘")
+    p_pn.add_argument("--reload", action="store_true", help="关闭已有同通道实例并重新加载最新界面")
+    mode_grp = p_pn.add_mutually_exclusive_group()
+    mode_grp.add_argument("--zen", action="store_true", help="以极简专注模式启动 (同屏仅展示 1 个核心数据 + 1 张统计图)")
+    mode_grp.add_argument("--full", action="store_true", help="以全盘星轨观测台模式启动")
 
     # shortcut
     p_sc = sub.add_parser("shortcut", help="注册或移除 Windows 开始菜单与任务栏可固定快捷方式")
@@ -266,7 +270,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     if cmd == "panel":
         from .panel import launch_panel
 
-        return launch_panel(start_minimized=bool(getattr(args, "minimized", False)))
+        init_mode: Optional[str] = "zen" if getattr(args, "zen", False) else ("full" if getattr(args, "full", False) else None)
+        return launch_panel(
+            start_minimized=bool(getattr(args, "minimized", False)),
+            initial_mode=init_mode,
+            reload_existing=bool(getattr(args, "reload", False)),
+        )
 
     if cmd == "shortcut":
         from .panel import APP_USER_MODEL_ID, _get_icon_path
