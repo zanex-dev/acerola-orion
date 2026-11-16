@@ -50,7 +50,8 @@ Select-String -Path .\acerola_orion\*.py -Pattern "HTTPConnection|socket|subproc
    - Daily, per-model-family (`4C`, `4A`, `4H`, `Flash`, `Claude`, `GPT-OSS`), and per-session token tables comparing `1.0x` standard API USD, `0.5x` promotional USD, and `1.5x` internal weight estimates;
    - Pairs 7-decimal quota watermarks against local token deltas to detect zero-chat offline **Phantom Drains** and estimate implied pool capacity.
 3. **Acerola-Guillotine (`acerola_orion/guillotine.py`)**
-   - Zero-polling (`0.00%` CPU) Win32 kernel `SYNCHRONIZE` handle guard (`WaitForMultipleObjects`) anchored to the root Electron UI process — never false-triggers on window minimize/tray, and terminates lingering orphan `language_server*.exe` processes in `<1ms` upon real app exit (with same-handle executable image verification) to prevent unwanted post-close background summarization token drain.
+   - **Prevents Post-Exit Context Compaction, Memory Pollution & Silent Quota Drain**: When you close the Antigravity window, lingering orphan `language_server*.exe` processes often stay alive in the background inheriting your active frontier model (`Gemini 4 Carbon/Argon`, `Claude Opus`) to run unprompted context compaction, background summarization, and memory distillation — silently burning quota and polluting project memory with unfinished state;
+   - **Zero-Polling (`0.00%` CPU) `<1ms` Cleanup**: Anchors a Win32 kernel `SYNCHRONIZE` handle (`WaitForMultipleObjects`) directly to the root Electron UI process — never false-triggers on minimize/tray, and terminates orphan `language_server*.exe` processes in `<1ms` upon real app exit (with same-handle executable image verification).
 4. **Orion Astrolabe Desktop Console & System Tray (`acerola_orion/panel.py` & `acerola_orion/win_tray.py`)**
    - Native Win32 DWM immersive dark Obsidian/Crimson High-DPI dashboard featuring **Dual Orion Astrolabe Chronographs** (`5h` outer arc + `Weekly` inner orbital ring + **Golden Time-Pace Marker** for instant Surplus vs. Overburn comparison) and interactive 24h trajectory / 14-day spend vector charts;
    - One-click toggle between **Full Observatory Mode** and **Zen Focus Mode (`--zen`)** — presenting strictly **1 Hero Metric + 1 Statistical Chart** at a time for zero-clutter monitoring, alongside zero-CPU close-to-tray residency.
@@ -75,10 +76,15 @@ acerola-orion shortcut            # Register Windows Start Menu & Taskbar-pinnab
 
 # Optional: enable or cleanly remove logon autostart orphan-process guard
 acerola-orion guard install
+acerola-orion guard status
 acerola-orion guard uninstall
 ```
 
-> **Autostart Transparency**: `acerola-orion guard install` writes a 3-line plain-text VBScript at `~/.gemini/acerola_orion/start_guard_silent.vbs` (launching `pythonw.exe -m acerola_orion guard daemon` without a console flash) and registers a user-level Windows Logon Scheduled Task named `AcerolaOrionGuard` (no admin UAC required, zero registry or `app.asar` changes). `acerola-orion guard uninstall` stops the daemon and deletes both cleanly.
+### ⚔️ How the Guillotine Guard Works ("Enable Once, Forget Forever")
+
+- **Independent Headless Daemon**: Enabling the guard once — either via `acerola-orion guard install` or by clicking **`🛡️ 自启守卫`** inside `acerola-orion panel` — starts a standalone `0.00%` CPU background guard process that **stays active even if you completely exit the GUI dashboard**.
+- **Silent Logon Autostart (Never Pops Up the Dashboard)**: Across PC reboots, Windows automatically starts **only** the headless `guard daemon` in the background — no console flash, no tray clutter, and **it never pops up the GUI panel unless you open `panel` yourself**.
+- **Autostart Transparency & 1-Click Removal**: `guard install` writes a 3-line plain-text VBScript at `~/.gemini/acerola_orion/start_guard_silent.vbs` (launching `pythonw.exe -m acerola_orion guard daemon`) and registers a user-level Windows Logon Scheduled Task named `AcerolaOrionGuard` (no admin UAC required, zero registry or `app.asar` changes). Running `acerola-orion guard uninstall` (or clicking **`⏹️ 停用`**) stops the daemon and deletes both cleanly.
 
 Run the verification & security self-audit suite:
 

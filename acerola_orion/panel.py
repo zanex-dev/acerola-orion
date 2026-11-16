@@ -2266,8 +2266,9 @@ class AcerolaOrionApp(tk.Tk):
         else:
             self.lbl_guard_main.configure(text="⚪ 守卫未驻留", fg=ACCENT_AMBER)
         leg_warn = f" | ⚠️旧脚本:{g.legacy_pids}" if g.legacy_buggy_killer_active else ""
+        auto_desc = "开机静默自启(不弹面板)" if g.scheduled_task_installed else "未开自启"
         self.lbl_guard_sub.configure(
-            text=f"自启任务: {'已注册' if g.scheduled_task_installed else '未注册'} | 残留hub: {r.stale_hub_files}{leg_warn}"
+            text=f"{auto_desc} · 防关窗压缩/污染记忆 | hub:{r.stale_hub_files}{leg_warn}"
         )
 
         # Dual Orion Astrolabe Chronographs (Full Mode)

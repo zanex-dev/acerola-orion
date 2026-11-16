@@ -335,7 +335,7 @@ def install_guard_autostart() -> Dict[str, Any]:
         "daemon": bg_res,
         "retired_legacy": retire_info,
         "message": (
-            f"已注册开机登录计划任务 [{SCHEDULED_TASK_NAME}] 并启动零轮询内核守卫！"
+            f"已开启断头台后台守卫并注册开机静默自启 [{SCHEDULED_TASK_NAME}]（独立 0% CPU 值守，开机不弹窗且不唤起仪表盘；即使关闭面板仍持续防关窗自动压缩与记忆污染）！"
             if task_ok
             else f"自启任务注册异常 ({err_detail})，但后台守卫状态: {bg_res.get('message')}"
         ),
