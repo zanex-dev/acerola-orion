@@ -17,7 +17,7 @@ from typing import Dict, Iterator, Optional
 APP_NAME = "acerola-orion"
 APP_CODENAME = "Acerola-Orion (雅赛劳拉莉昂)"
 APP_TRINITY = "Kiss-Shot · Acerola-Orion · Heart-Under-Blade"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 
 _ATOMIC_TMP_SEQ = itertools.count(1)
 

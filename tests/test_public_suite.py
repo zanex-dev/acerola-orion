@@ -27,6 +27,7 @@ import unittest
 from unittest.mock import patch
 
 import acerola_orion.__main__ as cli_main
+import acerola_orion.cache_radar as cache_radar
 import acerola_orion.cli_render as cli_render
 import acerola_orion.constants as constants
 import acerola_orion.guillotine as guillotine
@@ -153,6 +154,10 @@ class AcerolaOrionPublicSuite(unittest.TestCase):
             "ROUND1_" + "STATE",
             "ROUND2_" + "STATE",
             "ROUND3_" + "STATE",
+            "orion-" + "mux",
+            "probe_active_" + "mux",
+            "edge_" + "pin",
+            "KEEPALIVE_" + "PROMPT",
         ]
 
         scan_targets = list(py_files) + [
@@ -181,7 +186,7 @@ class AcerolaOrionPublicSuite(unittest.TestCase):
             rpc.ConnectRpcClient(http_port=8080, csrf_token="tok", host="example.com")
 
     def test_02_version_and_model_pricing_math(self) -> None:
-        self.assertEqual(constants.APP_VERSION, "1.2.0")
+        self.assertEqual(constants.APP_VERSION, "1.3.0")
         c4 = constants.classify_model("Gemini 4 Carbon (High)")
         self.assertEqual(c4.family_id, "4c")
         self.assertAlmostEqual(c4.compute_usd(1_000_000, 0, 100_000, 1.0), 6.0)
@@ -861,6 +866,129 @@ class AcerolaOrionPublicSuite(unittest.TestCase):
             for tk_key in ("ledger", "diag", "hub"):
                 app.select_full_tab(tk_key)
                 app.update_idletasks()
+        finally:
+            app.exit_app()
+
+    def test_15_passive_cache_radar_timer_disambiguation_and_ui_anti_truncation(self) -> None:
+        # 1) Timer disambiguation: 100.000% 5h bucket is standby, <100% is active countdown
+        b_full = telemetry.QuotaBucketView("G", "gemini-5h", "5h", "18000s", 1.0, 100.0, "2030-01-01T00:00:00Z", "4小时 59分")
+        self.assertFalse(b_full.timer_started)
+        self.assertIn("满额待命", b_full.status_text)
+
+        b_used = telemetry.QuotaBucketView("G", "gemini-5h", "5h", "18000s", 0.75, 75.0, "2030-01-01T00:00:00Z", "3小时 10分")
+        self.assertTrue(b_used.timer_started)
+        self.assertIn("重置倒计时", b_used.status_text)
+
+        # 2) Auxiliary 429 separation & stage1/stage2 sidecar failure count
+        log_stats = telemetry.analyze_logs(
+            [
+                "E1117 10:00:01 mon.go:11] Monitor sir_flash_lite FINISHED: Failed: HTTP 429 Too Many Requests",
+                "E1117 10:00:02 title.go:22] conversation_title failed: status=429",
+                "E1117 10:00:03 chat.go:33] HTTP/2 429 Too Many Requests",
+            ],
+            [],
+        )
+        self.assertEqual(log_stats.sidecar.stage1_fail_count, 1)
+        self.assertEqual(log_stats.aux_429_count, 2)
+        self.assertEqual(log_stats.http_429_503_count, 1)
+
+        # 3) Passive CacheRadarSampler: smart_guard protects warm >=100K window & zero redundant reads
+        brain = self.tmp_path / "radar_brain"
+        ann = self.tmp_path / "radar_ann"
+        ann.mkdir(parents=True)
+        cid_big = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        cid_small = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        now_ep = 1_800_000_000.0
+
+        def _write_conv(cid: str, title: str, in_tok: int, cache_tok: int, out_tok: int, ep: float) -> Path:
+            cdir = brain / cid
+            (cdir / ".system_generated" / "logs").mkdir(parents=True, exist_ok=True)
+            (cdir / ".user_uploaded").mkdir(parents=True, exist_ok=True)
+            (cdir / ".user_uploaded" / "private.png").write_bytes(b"SKIP_ME")
+            (ann / f"{cid}.pbtxt").write_text(f'title: "{title}"\n', encoding="utf-8")
+            iso = datetime.fromtimestamp(ep, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            tp = cdir / ".system_generated" / "logs" / "transcript.jsonl"
+            tp.write_text(
+                json.dumps(
+                    {
+                        "step_index": 2,
+                        "type": "PLANNER_RESPONSE",
+                        "status": "DONE",
+                        "created_at": iso,
+                        "input_tokens": in_tok,
+                        "cache_read_tokens": cache_tok,
+                        "output_tokens": out_tok,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            os.utime(tp, ns=(int(ep * 1_000_000_000), int(ep * 1_000_000_000)))
+            return tp
+
+        _write_conv(cid_big, "Heavy Refactor", 20_000, 180_000, 4_000, now_ep - 200.0)
+        _write_conv(cid_small, "Quick Chat", 2_000, 0, 300, now_ep - 10.0)
+
+        sampler = cache_radar.CacheRadarSampler(brain_dir=brain, annotations_dir=ann, target_mode="smart_guard")
+        st_guard = sampler.sample(now_epoch=now_ep)
+        self.assertEqual(st_guard.conv_id, cid_big)
+        self.assertTrue(st_guard.smart_guarded)
+        self.assertEqual(st_guard.phase, cache_radar.PHASE_WARNING)
+        self.assertTrue(st_guard.should_pop_smart_hud)
+        reads_after_first = sampler.tail_read_count
+        # Second sample without file changes must perform ZERO tail reads
+        st_guard_2 = sampler.sample(now_epoch=now_ep + 5.0)
+        self.assertEqual(sampler.tail_read_count, reads_after_first)
+        self.assertAlmostEqual(st_guard_2.remaining_sec, 45.0, places=1)
+
+        # CLI `radar --json` smoke check
+        buf = io.StringIO()
+        with (
+            patch.object(cache_radar, "get_agy_brain_dir", return_value=brain),
+            redirect_stdout(buf),
+        ):
+            rc = cli_main.main(["radar", "--json"])
+        self.assertEqual(rc, 0)
+        radar_json = json.loads(buf.getvalue())
+        self.assertEqual(radar_json["state"]["conv_id"], cid_big)
+
+        # 4) UI anti-truncation & withdrawn-window update_idletasks() zero-spinlock check
+        import tkinter as tk
+
+        try:
+            with patch.object(panel_mod.AcerolaOrionApp, "refresh_all_async", lambda self, silent=False: None):
+                app = panel_mod.AcerolaOrionApp(auto_refresh_ms=0, enable_tray=False, enable_hud=True, initial_mode="full")
+        except tk.TclError as exc:
+            self.skipTest(f"Tk display unavailable in headless environment: {exc}")
+            return
+        try:
+            # Verify horizontal scrollbar contract on Treeviews
+            self.assertTrue(bool(app.tree_daily.cget("xscrollcommand")))
+            self.assertTrue(bool(app.tree_models.cget("xscrollcommand")))
+            self.assertTrue(bool(app.tree_sessions.cget("xscrollcommand")))
+
+            # Withdraw window (simulating tray sleep) and trigger redraws: must NOT spinlock on after_idle!
+            app.withdraw()
+            app._apply_radar_state_to_ui(st_guard, force_tooltip=True)
+            app.dial_gemini._redraw()
+            app.hub_chart._redraw()
+            app._redraw_radar_bar()
+            t0 = time.monotonic()
+            app.update_idletasks()
+            self.assertLess(time.monotonic() - t0, 2.0)
+
+            # Verify Zen mode "cache" pill & HUD mode switching
+            app.deiconify()
+            app.set_hud_mode("always")
+            self.assertEqual(app._hud_mode, "always")
+            self.assertIsNotNone(app._hud_win)
+            assert app._hud_win is not None
+            self.assertTrue(app._hud_win._is_shown)
+            app.set_hud_mode("off")
+            self.assertFalse(app._hud_win._is_shown)
+            app.toggle_view_mode("zen")
+            app.select_zen_metric("cache")
+            self.assertEqual(app._zen_metric, "cache")
         finally:
             app.exit_app()
 

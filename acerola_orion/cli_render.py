@@ -56,21 +56,24 @@ def render_telemetry_report(r: OrionTelemetryReport) -> str:
                 cur_group = b.group_name
                 lines.append(f"  ▸ {cur_group}")
             pct_str = f"{b.remaining_pct:7.3f}%" if math.isfinite(b.remaining_pct) else " --.---%"
+            status_desc = getattr(b, "status_text", "") or f"重置倒计时: {b.reset_countdown}"
             lines.append(
                 f"    {b.bucket_id:<15} [{_bar(b.remaining_fraction, 20)}] "
-                f"{pct_str}  (重置倒计时: {b.reset_countdown})"
+                f"{pct_str}  ({status_desc})"
             )
 
     ls = r.log_stats
     sc = ls.sidecar
     lines.append("\n【3】 🛡️ 旁路风控延迟与拥堵体征 (Sidecar Risk Monitor & Congestion)")
     lines.append(
-        f"  ● 旁路安全审查   : 累计触发 {sc.eval_count} 次 | 平均附加耗时 {sc.avg_ms:.0f} ms | "
-        f"峰值 {sc.max_ms:.0f} ms | 10s卡死超时 {sc.timeout_count} 次"
+        f"  ● 旁路安全审查   : 累计触发 {sc.eval_count} 次 "
+        f"(一审失败={getattr(sc, 'stage1_fail_count', 0)} / 二审失败={getattr(sc, 'stage2_fail_count', 0)}) | "
+        f"平均附加耗时 {sc.avg_ms:.0f} ms | 峰值 {sc.max_ms:.0f} ms | 10s卡死超时 {sc.timeout_count} 次"
     )
     lines.append(
         f"  ● 限流拥堵计数   : 容量耗尽/排队={ls.capacity_exhausted_count} 次 | "
-        f"HTTP 429/503={ls.http_429_503_count} 次 | 网络切换断流={ls.network_changed_count} 次"
+        f"主对话429/503={ls.http_429_503_count} 次 | 旁路杂项429={getattr(ls, 'aux_429_count', 0)} 次 | "
+        f"埋点超时={getattr(ls, 'telemetry_timeout_count', 0)} 次 | 网络切换断流={ls.network_changed_count} 次"
     )
 
     g = r.guard

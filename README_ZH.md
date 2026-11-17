@@ -5,12 +5,12 @@
 <h1 align="center">Acerola-Orion (雅赛劳拉莉昂)</h1>
 
 <p align="center">
-  <strong>面向 Google Antigravity 的 7 位高精度配额水位看板、本地隐私隔离 Token 明细验钞账本（Orion）与零轮询 Win32 内核孤儿进程退出守卫（Acerola）。</strong>
+  <strong>面向 Google Antigravity 的 7 位高精度配额水位看板、被动式 Prompt KV 缓存余温雷达、本地隐私隔离 Token 明细验钞账本（Orion）与零轮询 Win32 内核孤儿进程退出守卫（Acerola）。</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/zanex-dev/acerola-orion/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-14%2F14%20passing-brightgreen" alt="Tests" /></a>
-  <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v1.2.0-be123c" alt="Version v1.2.0" /></a>
+  <a href="https://github.com/zanex-dev/acerola-orion/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-15%2F15%20passing-brightgreen" alt="Tests" /></a>
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v1.3.0-be123c" alt="Version v1.3.0" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-e11d48.svg" alt="License: MIT" /></a>
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.10%2B%20(0%20deps)-3776AB.svg" alt="Python 3.10+" /></a>
   <img src="https://img.shields.io/badge/network-127.0.0.1%20loopback%20only-059669" alt="Loopback Only" />
@@ -31,7 +31,8 @@
 3. **零凭证与零隐私触碰**：
    - **绝不**请求任何 OAuth 授权，**绝不**读取 `state.vscdb`、Windows DPAPI 凭据库、浏览器 Cookie 或任何 Token；
    - 本地账本仅只读统计 `transcript.jsonl` 中的 Token 计数字段与会话标题，**不存储对话正文**、自动跳过所有媒体附件并拦截符号链接/目录联接越界；终端与 JSON 输出自动脱敏，不回显个人登录邮箱。
-4. **一键源码自查命令（PowerShell 3 秒验真）**：
+4. **纯明文源码发布声明（谨防李鬼套壳）**：官方**仅以纯明文 Python 源码形式发布**，绝不提供任何闭源编译打包的单文件 `.exe` 安装程序；请勿运行来历不明的第三方编译包。
+5. **一键源码自查命令（PowerShell 3 秒验真）**：
 
 ```powershell
 # 一键检索全仓所有网络、凭据与外部进程调用，结果一目了然：
@@ -45,9 +46,12 @@ Select-String -Path .\acerola_orion\*.py -Pattern "HTTPConnection|socket|subproc
 ### 🔭 1. Orion · 高精度配额透视与本地 Token 验钞账本
 1. **7 位浮点精度双通道配额看板 (`Orion-Telemetry`)**
    - 原生 Win32 `CreateToolhelp32Snapshot` 亚毫秒级进程树识别 + 本机 `127.0.0.1` 只读 Connect-RPC 查询（`GetUserStatus`、`GetLoadCodeAssist`、`RetrieveUserQuotaSummary`）；
-   - 绕过前端 UI 模糊进度条，精确直读 `gemini-5h`、`gemini-weekly`、`3p-5h`、`3p-weekly` 剩余百分比与重置倒计时；
-   - 采用 Win32 `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE` 无锁增量游标解析本地日志，统计 `HTTP 429/503` 限流次数与旁路风控模型（`sir_flash_lite` / `severe_internal_risks_agy`）附加延迟耗时。
-2. **GPT 同款本地 Token 明细账本 & `1.5x` 电子秤验钞机 (`Orion-Ledger`)**
+   - 绕过前端 UI 模糊进度条，精确直读 `gemini-5h`、`gemini-weekly`、`3p-5h`、`3p-weekly` 剩余百分比，并精准区分 `100.000%` 满额待命未触发计时与真实重置倒计时；
+   - 采用 Win32 `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE` 无锁增量游标解析本地日志，分离统计主对话 `HTTP 429/503` 限流与旁路杂项 `429`（自动起标题/搜索摘要等），记录旁路风控模型（`sir_flash_lite` / `severe_internal_risks_agy`）附加延迟耗时。
+2. **纯本地被动「Prompt KV 缓存 250s 余温雷达」与桌面悬浮胶囊 (`Orion-CacheRadar`)**
+   - **零额外发包、零端口介入**：仅在目标 `transcript.jsonl` 的 `(mtime_ns, size)` 变化时增量无锁读取末尾 `16KB`，计算活跃上下文体积、缓存命中率与 **4分10秒（250s）缓存余温倒计时**；
+   - 支持 **智能守大窗 (`smart_guard`)**（≥100K 未冷窗口优先防小窗抢焦）、**纯跟最新 (`latest`)** 与 **手动锁窗 (`pinned`)**，并配备可拖拽置顶迷你胶囊 HUD（智能临期弹出 / 常驻 / 关闭）。
+3. **GPT 同款本地 Token 明细账本 & `1.5x` 电子秤验钞机 (`Orion-Ledger`)**
    - 按**日期、模型家族（4C / 4A / 4H / Flash / Claude / GPT-OSS）、单次会话**精确统计 `Input`、`Cache-Read`、`Output` Token，并列折算 **1.0x 官方 API 原价**、**0.5x 首发促销半价** 与 **1.5x 估算倍率权重**；
    - **幽灵掉点对账**：比对历史配额水位快照与真实对话步数，自动识别零对话区间的**离线幽灵掉点（Phantom Drain）**，并实测推算等效总额度池容量。
 
@@ -88,6 +92,9 @@ pip install -e . --no-deps
 
 # 实时 7 位精度配额水位、订阅层级与旁路延迟体检
 acerola-orion status
+
+# 纯本地观测当前活跃会话上下文体积与 Prompt KV 缓存 250s 余温倒计时
+acerola-orion radar
 
 # 近 14 天每日 Token 明细账单、模型倍率审计与验钞报告
 acerola-orion ledger --days 14

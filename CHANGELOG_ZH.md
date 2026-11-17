@@ -6,6 +6,18 @@
 
 日志格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本 2.0.0 (SemVer)](https://semver.org/lang/zh-CN/)。
 
+## [1.3.0] - 2026-11-17 — 被动式 Prompt KV 缓存余温雷达、配额计时消歧与高分屏 UI 防截断加固
+
+### 新增与优化
+- **纯本地被动「Prompt KV 缓存 250s 余温雷达」与桌面悬浮胶囊（`acerola_orion/cache_radar.py`、`rpc.py`、`panel.py`、`__main__.py`）**：
+  - 新增 `read_shared_tail_bytes()` Win32 无锁末尾 `16KB` 增量读取器与 `CacheRadarSampler` 被动观测引擎（`0` 网络发包、`0` 端口介入、严格跳过媒体附件目录与符号链接越界），实时计算活跃上下文体积、缓存命中率与 **250s（4分10秒）缓存余温倒计时**。
+  - 支持 `smart_guard`（智能守 `≥100K` 未冷大窗防抢焦）、`latest`（纯跟最新）与 `pinned`（手动锁定窗口）三种策略，集成主星盘内嵌雷达条、`acerola-orion radar` CLI 子命令、极简模式 `📡 缓存余温` 专注视图以及可拖拽置顶迷你胶囊 HUD（`smart` / `always` / `off`）。
+- **配额满额待命占位符消歧与日志 429 降噪（`acerola_orion/telemetry.py` & `cli_render.py`）**：
+  - 新增 `describe_quota_timer()`，精准区分 `100.000%` 未动用 `5h` 池的滑动占位符（提示 `满额待命 · 未开始计时`）与真实激活后的重置倒计时。
+  - 将不影响主对话的旁路 `429`（自动起标题、旁路审查器限流、搜索摘要）拆分为独立 `aux_429_count`，新增旁路一审/二审失败统计与 `glog` 假报错头剥离。
+- **高分屏 UI 边界与托盘唤醒防截断加固（`acerola_orion/panel.py`）**：
+  - 为全部账单 `Treeview` 补齐暗色横向滚动条 `Orion.Horizontal.TScrollbar`；星盘、统计图与进度条顶栏改为右侧读数/徽章优先固定防挤压；为隐藏态/跨页签画布加装 `_deferred_redraw_pending` 单次 `after_idle` 补画门闩与托盘唤醒重校准，彻底消除隐藏态 `1px` 缩条与自旋死锁（`15/15` 自动化安全与功能测试全绿）。
+
 ## [1.2.0] - 2026-11-16 — 猎户座星盘计时仪 UI 焕新与极简专注模式
 
 ### 新增与优化

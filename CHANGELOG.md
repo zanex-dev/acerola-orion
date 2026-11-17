@@ -6,6 +6,18 @@ All notable changes to **`acerola-orion`** will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-11-17 — Passive Prompt KV Cache Radar, Timer Disambiguation & High-DPI UI Anti-Truncation
+
+### Added & Hardened
+- **Passive Local Prompt KV Cache 250s Warmth Radar & Floating Capsule HUD (`acerola_orion/cache_radar.py`, `rpc.py`, `panel.py`, `__main__.py`)**:
+  - Added `read_shared_tail_bytes()` lock-free `16KB` tail reader and `CacheRadarSampler` (`0` network packets, `0` port hooks, strict media-folder isolation & junction containment) computing live context token volume, cache hit rate, and a **250s (4m10s) prompt cache warmth countdown** with zero-I/O 1-second memory ticks.
+  - Added three session-targeting modes (`smart_guard` protecting warm `>=100K` heavy windows, `latest`, and manual `pinned`), integrated into the Astrolabe Hub radar bar, `acerola-orion radar` CLI subcommand, Zen Mode `Cache` focus, and a draggable frameless topmost capsule HUD (`smart` / `always` / `off`).
+- **Standby Quota Timer Disambiguation & Log 429 De-Noising (`acerola_orion/telemetry.py` & `cli_render.py`)**:
+  - Added `describe_quota_timer()` to distinguish `100.000%` untouched `5h` rolling buckets (sliding placeholder timestamp) from genuinely active reset countdowns.
+  - Separated non-blocking auxiliary `429` events (auto-title, sidecar monitor, web summary) into `aux_429_count`, added stage-1/stage-2 sidecar failure counters, and stripped uninitialized Go `glog` noise prefixes.
+- **High-DPI Layout & Tray-Wakeup Redraw Hardening (`acerola_orion/panel.py`)**:
+  - Added `Orion.Horizontal.TScrollbar` across all ledger tables, packed right-aligned percentage/badge readouts before elastic titles to prevent narrow-window clipping, bound dynamic `wraplength` on guard/diagnostics banners, and added single-shot `_deferred_redraw_pending` latches plus tray-restore canvas recalibration to eliminate `1px` hidden-canvas truncation without idle spinlocks (`15/15` verification scenarios passing).
+
 ## [1.2.0] - 2026-11-16 — Orion Astrolabe Chronograph UI & Zen Focus Mode
 
 ### Added & Refined

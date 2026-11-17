@@ -5,12 +5,12 @@
 <h1 align="center">Acerola-Orion (雅赛劳拉莉昂)</h1>
 
 <p align="center">
-  <strong>7-Decimal Live Quota Telemetry, Local Privacy-Isolated Token Ledger / Rate-Card Auditor (Orion), and Zero-Polling Win32 Kernel Orphan-Process Guard (Acerola) for Google Antigravity.</strong>
+  <strong>7-Decimal Live Quota Telemetry, Passive Prompt KV Cache TTL Radar, Local Privacy-Isolated Token Ledger / Rate-Card Auditor (Orion), and Zero-Polling Win32 Kernel Orphan-Process Guard (Acerola) for Google Antigravity.</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/zanex-dev/acerola-orion/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-14%2F14%20passing-brightgreen" alt="Tests" /></a>
-  <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v1.2.0-be123c" alt="Version v1.2.0" /></a>
+  <a href="https://github.com/zanex-dev/acerola-orion/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-15%2F15%20passing-brightgreen" alt="Tests" /></a>
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v1.3.0-be123c" alt="Version v1.3.0" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-e11d48.svg" alt="License: MIT" /></a>
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.10%2B%20(0%20deps)-3776AB.svg" alt="Python 3.10+" /></a>
   <img src="https://img.shields.io/badge/network-127.0.0.1%20loopback%20only-059669" alt="Loopback Only" />
@@ -31,7 +31,8 @@ Built from day one with strict local physical boundaries so anyone can inspect a
 3. **Zero Credential or Prompt Access**:
    - Never requests OAuth authorization, and **never** reads `state.vscdb`, Windows DPAPI/Keychain, browser cookies, or tokens;
    - Indexes token integer counters and session titles from local `transcript.jsonl` / `.pbtxt` only — never stores prompt/response bodies, skips all media/attachments, blocks NTFS junctions/symlinks, and redacts account emails from CLI/JSON output.
-4. **3-Second Source Verification Command (PowerShell)**:
+4. **Plain-Text Python Source Only (No Closed-Source `.exe` Installers)**: Official releases are distributed **strictly as plain-text auditable Python source code**. Never run untrusted third-party compiled `.exe` bundles claiming to be Acerola-Orion.
+5. **3-Second Source Verification Command (PowerShell)**:
 
 ```powershell
 # Inspect every network, subprocess, and sensitive keyword across the entire package:
@@ -43,16 +44,19 @@ Select-String -Path .\acerola_orion\*.py -Pattern "HTTPConnection|socket|subproc
 ## Architecture
 
 1. **Orion-Telemetry (`acerola_orion/telemetry.py`)**
-   - Sub-millisecond Win32 `CreateToolhelp32Snapshot` process-tree inspection + `127.0.0.1` local Connect-RPC read-only status queries (`GetUserStatus`, `GetLoadCodeAssist`, `RetrieveUserQuotaSummary`) for 7-decimal `gemini-5h`, `gemini-weekly`, `3p-5h`, and `3p-weekly` remaining quota & reset countdowns;
-   - Lock-free `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE` incremental `(file_id, offset)` log cursor tracking `HTTP 429/503` throttling counts and sidecar monitor (`sir_flash_lite` / `severe_internal_risks_agy`) latency.
-2. **Orion-Ledger & Rate Auditor (`acerola_orion/ledger.py`)**
+   - Sub-millisecond Win32 `CreateToolhelp32Snapshot` process-tree inspection + `127.0.0.1` local Connect-RPC read-only status queries (`GetUserStatus`, `GetLoadCodeAssist`, `RetrieveUserQuotaSummary`) for 7-decimal `gemini-5h`, `gemini-weekly`, `3p-5h`, and `3p-weekly` remaining quota, disambiguating `100.000%` untouched standby windows from active reset countdowns;
+   - Lock-free `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE` incremental `(file_id, offset)` log cursor separating main-turn `HTTP 429/503` throttling from auxiliary sidecar/title `429` noise while tracking sidecar monitor (`sir_flash_lite` / `severe_internal_risks_agy`) latency.
+2. **Orion-CacheRadar (`acerola_orion/cache_radar.py`)**
+   - **100% Passive Zero-Egress Prompt KV Cache Thermometer**: Reads only the trailing `16KB` of `transcript.jsonl` via lock-free shared handles when `(mtime_ns, size)` changes to compute live context volume, cache hit rate, and a calibrated **250s (4m10s) cache warmth countdown**;
+   - Supports `smart_guard` (protects warm `>=100K` heavy windows from focus theft by small chats), `latest`, and manual `pinned` window modes, plus a draggable frameless floating capsule HUD (`smart` / `always` / `off`).
+3. **Orion-Ledger & Rate Auditor (`acerola_orion/ledger.py`)**
    - Strictly privacy-isolated incremental SQLite indexer over `brain/<uuid>/.system_generated/logs/transcript.jsonl` and `annotations/<uuid>.pbtxt`;
    - Daily, per-model-family (`4C`, `4A`, `4H`, `Flash`, `Claude`, `GPT-OSS`), and per-session token tables comparing `1.0x` standard API USD, `0.5x` promotional USD, and `1.5x` internal weight estimates;
    - Pairs 7-decimal quota watermarks against local token deltas to detect zero-chat offline **Phantom Drains** and estimate implied pool capacity.
-3. **Acerola-Guillotine (`acerola_orion/guillotine.py`)**
+4. **Acerola-Guillotine (`acerola_orion/guillotine.py`)**
    - **Prevents Post-Exit Context Compaction, Memory Pollution & Silent Quota Drain**: When you close the Antigravity window, lingering orphan `language_server*.exe` processes often stay alive in the background inheriting your active frontier model (`Gemini 4 Carbon/Argon`, `Claude Opus`) to run unprompted context compaction, background summarization, and memory distillation — silently burning quota and polluting project memory with unfinished state;
    - **Zero-Polling (`0.00%` CPU) `<1ms` Cleanup**: Anchors a Win32 kernel `SYNCHRONIZE` handle (`WaitForMultipleObjects`) directly to the root Electron UI process — never false-triggers on minimize/tray, and terminates orphan `language_server*.exe` processes in `<1ms` upon real app exit (with same-handle executable image verification).
-4. **Orion Astrolabe Desktop Console & System Tray (`acerola_orion/panel.py` & `acerola_orion/win_tray.py`)**
+5. **Orion Astrolabe Desktop Console & System Tray (`acerola_orion/panel.py` & `acerola_orion/win_tray.py`)**
    - Native Win32 DWM immersive dark Obsidian/Crimson High-DPI dashboard featuring **Dual Orion Astrolabe Chronographs** (`5h` outer arc + `Weekly` inner orbital ring + **Golden Time-Pace Marker** for instant Surplus vs. Overburn comparison) and interactive 24h trajectory / 14-day spend vector charts;
    - One-click toggle between **Full Observatory Mode** and **Zen Focus Mode (`--zen`)** — presenting strictly **1 Hero Metric + 1 Statistical Chart** at a time for zero-clutter monitoring, alongside zero-CPU close-to-tray residency.
 
@@ -67,6 +71,7 @@ pip install -e . --no-deps
 
 # On-demand CLI & GUI (no background service required)
 acerola-orion status
+acerola-orion radar               # Passive local Prompt KV cache 250s warmth radar
 acerola-orion ledger --days 14
 acerola-orion audit
 acerola-orion panel               # Launch Orion Astrolabe desktop observatory

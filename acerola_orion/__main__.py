@@ -3,6 +3,7 @@
 Acerola-Orion 统一命令行入口与启动器部署器 (acerola_orion/__main__.py)
 支持子命令:
   status             实时 7 位精度配额水位、订阅层级、旁路审查延迟与内核守卫状态 (默认)
+  radar              实时观测本地活跃会话上下文体积与 Prompt KV 缓存 250s 余温倒计时
   ledger             本地 Token 明细账本 (每日/模型家族/活跃会话) 与电子秤验钞机报告
   audit              单独输出高精度配额斜率与无对话幽灵掉点验钞报告
   guard <action>     管理零轮询内核断头台守卫 (status | start | stop | install | uninstall | daemon | retire-legacy)
@@ -140,6 +141,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_st.add_argument("--json", action="store_true", help="输出结构化 JSON")
     p_st.add_argument("--no-record", action="store_true", help="不写入本地配额水位快照")
 
+    # radar
+    p_rd = sub.add_parser("radar", help="纯本地被动观测活跃会话上下文体积与 Prompt KV 缓存 250s 余温状态")
+    p_rd.add_argument(
+        "--mode",
+        choices=["smart_guard", "latest", "pinned"],
+        default="smart_guard",
+        help="会话监控策略: smart_guard (智能守≥100K大窗) | latest (跟最新) | pinned (手动锁定)",
+    )
+    p_rd.add_argument("--pin", default="", help="当 --mode pinned 时指定目标会话 UUID")
+    p_rd.add_argument("--json", action="store_true", help="输出结构化 JSON")
+
     # ledger
     p_lg = sub.add_parser("ledger", help="输出 GPT 同款每日 Token 账本、模型倍率审计与黑盒验钞报告")
     p_lg.add_argument("--days", type=_ledger_days_arg, default=14, help="汇总最近 N 天 (默认 14，范围 1..3650)")
@@ -160,9 +172,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_gd.add_argument("--json", action="store_true", help="输出结构化 JSON")
 
     # panel
-    p_pn = sub.add_parser("panel", help="启动猎户座星盘桌面主控台 (支持全盘星轨模式与极简专注模式切换)")
+    p_pn = sub.add_parser("panel", help="启动猎户座星盘桌面主控台 (支持全盘星轨模式、极简专注模式与缓存悬浮胶囊)")
     p_pn.add_argument("--minimized", action="store_true", help="启动后直接静默驻留右下角系统托盘")
     p_pn.add_argument("--reload", action="store_true", help="关闭已有同通道实例并重新加载最新界面")
+    p_pn.add_argument(
+        "--hud",
+        choices=["smart", "always", "off"],
+        default=None,
+        help="设置桌面 KV 缓存悬浮胶囊模式: smart (≥100K临期预警) | always (常驻) | off (关闭)",
+    )
     mode_grp = p_pn.add_mutually_exclusive_group()
     mode_grp.add_argument("--zen", action="store_true", help="以极简专注模式启动 (同屏仅展示 1 个核心数据 + 1 张统计图)")
     mode_grp.add_argument("--full", action="store_true", help="以全盘星轨观测台模式启动")
@@ -196,6 +214,36 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(json.dumps(rep.to_dict(), ensure_ascii=False, indent=2))
         else:
             print(render_telemetry_report(rep))
+        return 0
+
+    if cmd == "radar":
+        from .cache_radar import CacheRadarSampler
+
+        sampler = CacheRadarSampler(
+            target_mode=str(getattr(args, "mode", "smart_guard") or "smart_guard"),
+            pinned_conv_id=str(getattr(args, "pin", "") or ""),
+        )
+        state = sampler.sample()
+        candidates = sampler.list_recent_sessions(limit=6)
+        if getattr(args, "json", False):
+            print(
+                json.dumps(
+                    {
+                        "state": state.to_dict(),
+                        "recent_sessions": [c.to_dict() for c in candidates],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        else:
+            print(f"✦ Orion-CacheRadar 本地缓存余温观测: {state.badge_text}")
+            print(f"  ● 明细: {state.detail_text}")
+            if candidates:
+                print("  ● 近期活跃会话候选:")
+                for c in candidates:
+                    mark = "👉" if c.is_current else "  "
+                    print(f"    {mark} {c.menu_label}")
         return 0
 
     if cmd == "ledger":
@@ -274,6 +322,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return launch_panel(
             start_minimized=bool(getattr(args, "minimized", False)),
             initial_mode=init_mode,
+            initial_hud_mode=getattr(args, "hud", None),
             reload_existing=bool(getattr(args, "reload", False)),
         )
 

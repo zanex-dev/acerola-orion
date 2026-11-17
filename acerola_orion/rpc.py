@@ -1213,3 +1213,85 @@ def read_shared_file_lines(path: Path | str, max_tail_bytes: int = 4 * 1024 * 10
     if not text:
         return []
     return text.splitlines()
+
+
+def read_shared_tail_bytes(path: Path | str, max_bytes: int = 16 * 1024) -> Tuple[bytes, bool]:
+    """
+    Lock-free tail byte reader using Win32 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE.
+    Reads at most `max_bytes` from the end of `path` (plus a 1-byte lookbehind when `size > max_bytes`
+    to detect whether the tail starts on an exact `\\n` boundary).
+    Returns `(tail_bytes, truncated_head)`:
+      - `truncated_head=False` when `tail_bytes` starts cleanly at byte 0 of the file or immediately after `\\n`.
+      - `truncated_head=True` when `tail_bytes` starts mid-line (caller should discard up to first `\\n`).
+    """
+    if max_bytes <= 0:
+        return b"", False
+    p_str = str(path)
+    if not os.path.exists(p_str):
+        return b"", False
+
+    if _KERNEL32 is None:
+        try:
+            with open(p_str, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                total = f.tell()
+                if total <= 0:
+                    return b"", False
+                if total <= max_bytes:
+                    f.seek(0, os.SEEK_SET)
+                    return f.read(total), False
+                seek_pos = total - max_bytes - 1
+                f.seek(seek_pos, os.SEEK_SET)
+                buf_raw = f.read(max_bytes + 1)
+                if not buf_raw:
+                    return b"", False
+                return buf_raw[1:], (buf_raw[0] != 0x0A)
+        except OSError:
+            return b"", False
+
+    h_file = _KERNEL32.CreateFileW(
+        p_str,
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        None,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        None,
+    )
+    if not _is_valid_handle(h_file):
+        return b"", False
+
+    try:
+        file_size = wintypes.LARGE_INTEGER(0)
+        if not _KERNEL32.GetFileSizeEx(h_file, ctypes.byref(file_size)):
+            return b"", False
+        total = int(file_size.value)
+        if total <= 0:
+            return b"", False
+
+        if total <= max_bytes:
+            buf = ctypes.create_string_buffer(total)
+            bytes_read = wintypes.DWORD(0)
+            if not _KERNEL32.ReadFile(h_file, buf, total, ctypes.byref(bytes_read), None) or bytes_read.value == 0:
+                return b"", False
+            return buf.raw[: bytes_read.value], False
+
+        seek_pos = total - max_bytes - 1
+        new_pos = wintypes.LARGE_INTEGER(0)
+        if not _KERNEL32.SetFilePointerEx(
+            h_file,
+            wintypes.LARGE_INTEGER(seek_pos),
+            ctypes.byref(new_pos),
+            FILE_BEGIN,
+        ):
+            return b"", False
+
+        read_len = max_bytes + 1
+        buf = ctypes.create_string_buffer(read_len)
+        bytes_read = wintypes.DWORD(0)
+        if not _KERNEL32.ReadFile(h_file, buf, read_len, ctypes.byref(bytes_read), None) or bytes_read.value == 0:
+            return b"", False
+        chunk = buf.raw[: bytes_read.value]
+        return chunk[1:], (chunk[0] != 0x0A)
+    finally:
+        close_handle_safe(h_file)

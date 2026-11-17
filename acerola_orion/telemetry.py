@@ -51,6 +51,18 @@ class QuotaBucketView:
     remaining_pct: float
     reset_time: str
     reset_countdown: str
+    timer_started: bool = True
+    status_text: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.status_text:
+            self.timer_started, self.status_text = describe_quota_timer(
+                self.window,
+                self.bucket_id,
+                self.remaining_fraction,
+                self.reset_time,
+                self.reset_countdown,
+            )
 
 
 @dataclass
@@ -59,6 +71,8 @@ class SidecarMonitorStats:
     avg_ms: float = 0.0
     max_ms: float = 0.0
     timeout_count: int = 0
+    stage1_fail_count: int = 0
+    stage2_fail_count: int = 0
     recent_durations_ms: List[float] = field(default_factory=list)
     recent_timeouts: List[str] = field(default_factory=list)
 
@@ -68,6 +82,8 @@ class LogCongestionStats:
     ls_log_lines: int = 0
     capacity_exhausted_count: int = 0
     http_429_503_count: int = 0
+    aux_429_count: int = 0
+    telemetry_timeout_count: int = 0
     network_changed_count: int = 0
     sidecar: SidecarMonitorStats = field(default_factory=SidecarMonitorStats)
 
@@ -167,32 +183,84 @@ def load_json_safe(path: Path, default: Optional[Dict[str, Any]] = None) -> Dict
     return dict(fallback)
 
 
-def _format_reset_countdown(iso_str: str) -> str:
+def _seconds_until_iso(iso_str: str) -> Optional[float]:
     if not iso_str:
-        return "未知"
+        return None
     try:
         s = iso_str.strip()
+        if not s:
+            return None
         if s.endswith("Z") or s.endswith("z"):
             s = s[:-1] + "+00:00"
         target = datetime.fromisoformat(s)
         if target.tzinfo is None:
             target = target.replace(tzinfo=timezone.utc)
         now = datetime.now(timezone.utc)
-        sec = int((target - now).total_seconds())
-        if sec <= 0:
-            return "即将刷新"
-        if sec < 60:
-            return "<1分钟"
-        days, rem = divmod(sec, 86400)
-        hours, rem = divmod(rem, 3600)
-        mins = rem // 60
-        if days > 0:
-            return f"{days}天 {hours}小时 {mins}分"
-        if hours > 0:
-            return f"{hours}小时 {mins}分"
-        return f"{mins}分钟"
+        val = float((target - now).total_seconds())
+        return val if math.isfinite(val) else None
     except Exception:
+        return None
+
+
+def _format_reset_countdown(iso_str: str) -> str:
+    if not iso_str:
+        return "未知"
+    sec_f = _seconds_until_iso(iso_str)
+    if sec_f is None:
         return iso_str
+    sec = int(sec_f)
+    if sec <= 0:
+        return "即将刷新"
+    if sec < 60:
+        return "<1分钟"
+    days, rem = divmod(sec, 86400)
+    hours, rem = divmod(rem, 3600)
+    mins = rem // 60
+    if days > 0:
+        return f"{days}天 {hours}小时 {mins}分"
+    if hours > 0:
+        return f"{hours}小时 {mins}分"
+    return f"{mins}分钟"
+
+
+def describe_quota_timer(
+    window: str,
+    bucket_id: str,
+    remaining_fraction: float,
+    reset_time: str = "",
+    reset_countdown: str = "",
+) -> Tuple[bool, str]:
+    """
+    Disambiguate genuine active countdown timers from sliding `now + 5h` placeholders on 100% idle buckets.
+    Returns `(timer_started, human_status_text)`:
+      - Unfinite / offline: `(False, "状态: ...")`
+      - 100.000% untouched 5h rolling bucket: `(False, "满额待命 · 未开始计时 (首条请求触发 5h 窗口)")`
+      - 100.000% untouched weekly cap bucket: `(False, "满额未动用 · 周期刷新: ...")`
+      - Consumed bucket (`< 0.999999`): `(True, "重置倒计时: ...")`
+    """
+    try:
+        frac = float(remaining_fraction)
+    except (TypeError, ValueError):
+        frac = math.nan
+
+    cd = reset_countdown or (_format_reset_countdown(reset_time) if reset_time else "未知")
+    if not math.isfinite(frac):
+        if cd and cd != "未知":
+            return False, f"状态: {cd}"
+        return False, "等待配额采样..."
+
+    if frac >= 0.999999:
+        w = (window or "").strip().lower()
+        bid = (bucket_id or "").strip().lower()
+        if w in ("5h", "18000s") or bid.endswith("-5h"):
+            return False, "满额待命 · 未开始计时 (首条请求触发 5h 窗口)"
+        if w in ("weekly", "wk", "604800s") or bid.endswith("-weekly"):
+            if cd and cd not in ("未知", "即将刷新"):
+                return False, f"满额未动用 · 周期刷新: {cd}"
+            return False, "满额未动用"
+        return False, "满额待命 · 未开始计时"
+
+    return True, f"重置倒计时: {cd}"
 
 
 def _parse_duration_to_ms(raw: str) -> float:
@@ -235,6 +303,27 @@ _LOG_HTTP_ERR_RE = re.compile(
     re.IGNORECASE,
 )
 
+GLOG_PREINIT_PREFIX = "ERROR: logging before google.Init: "
+
+
+def strip_glog_init_noise(line: str) -> str:
+    """Strip uninitialized Go glog `ERROR: logging before google.Init: ` prefix while keeping real I/W/E tags."""
+    if line.startswith(GLOG_PREINIT_PREFIX):
+        return line[len(GLOG_PREINIT_PREFIX) :]
+    return line
+
+
+def _is_auxiliary_http_error_line(line: str) -> bool:
+    """True when a 429/503 log line belongs to non-main auxiliary tasks (sidecar monitor, auto-title, web summary)."""
+    return (
+        "Monitor sir_flash_lite" in line
+        or "Monitor severe_internal_risks_agy" in line
+        or "conversation_title" in line
+        or "conversation title generation" in line
+        or "search_web.go" in line
+        or "play.googleapis.com/log" in line
+    )
+
 
 @dataclass
 class _LsLogCursorState:
@@ -244,11 +333,15 @@ class _LsLogCursorState:
     ls_log_lines: int = 0
     capacity_exhausted_count: int = 0
     http_429_503_count: int = 0
+    aux_429_count: int = 0
+    telemetry_timeout_count: int = 0
     eval_count: int = 0
     duration_sum_ms: float = 0.0
     max_ms: float = 0.0
     recent_durations_ms: List[float] = field(default_factory=list)
     timeout_count: int = 0
+    stage1_fail_count: int = 0
+    stage2_fail_count: int = 0
     recent_timeouts: List[str] = field(default_factory=list)
 
     def copy(self) -> "_LsLogCursorState":
@@ -259,11 +352,15 @@ class _LsLogCursorState:
             ls_log_lines=self.ls_log_lines,
             capacity_exhausted_count=self.capacity_exhausted_count,
             http_429_503_count=self.http_429_503_count,
+            aux_429_count=self.aux_429_count,
+            telemetry_timeout_count=self.telemetry_timeout_count,
             eval_count=self.eval_count,
             duration_sum_ms=self.duration_sum_ms,
             max_ms=self.max_ms,
             recent_durations_ms=list(self.recent_durations_ms),
             timeout_count=self.timeout_count,
+            stage1_fail_count=self.stage1_fail_count,
+            stage2_fail_count=self.stage2_fail_count,
             recent_timeouts=list(self.recent_timeouts),
         )
 
@@ -288,21 +385,27 @@ def _fold_ls_lines(st: _LsLogCursorState, lines: Sequence[str]) -> None:
     """Fold log lines into `_LsLogCursorState` using fast C substring pre-filters before regex."""
     st.ls_log_lines += len(lines)
     for line in lines:
-        if "FINISHED:" in line and "duration=" in line and "Monitor" in line:
-            m_mon = _LOG_MON_RE.search(line)
-            if m_mon:
-                try:
-                    d_ms = round(_parse_duration_to_ms(m_mon.group(2)), 1)
-                except Exception:
-                    d_ms = None
-                if d_ms is not None:
-                    st.eval_count += 1
-                    st.duration_sum_ms += d_ms
-                    if st.eval_count == 1 or d_ms > st.max_ms:
-                        st.max_ms = d_ms
-                    st.recent_durations_ms.append(d_ms)
-                    if len(st.recent_durations_ms) > 12:
-                        del st.recent_durations_ms[:-6]
+        if "FINISHED:" in line and "Monitor" in line:
+            if "Failed:" in line:
+                if "Monitor sir_flash_lite FINISHED:" in line:
+                    st.stage1_fail_count += 1
+                elif "Monitor severe_internal_risks_agy FINISHED:" in line:
+                    st.stage2_fail_count += 1
+            if "duration=" in line:
+                m_mon = _LOG_MON_RE.search(line)
+                if m_mon:
+                    try:
+                        d_ms = round(_parse_duration_to_ms(m_mon.group(2)), 1)
+                    except Exception:
+                        d_ms = None
+                    if d_ms is not None:
+                        st.eval_count += 1
+                        st.duration_sum_ms += d_ms
+                        if st.eval_count == 1 or d_ms > st.max_ms:
+                            st.max_ms = d_ms
+                        st.recent_durations_ms.append(d_ms)
+                        if len(st.recent_durations_ms) > 12:
+                            del st.recent_durations_ms[:-6]
 
         if (
             "EXHAUSTED" in line
@@ -320,20 +423,22 @@ def _fold_ls_lines(st: _LsLogCursorState, lines: Sequence[str]) -> None:
                 or "resource_exhausted" in low
             )
         if has_http_hint and _LOG_HTTP_ERR_RE.search(line):
-            st.http_429_503_count += 1
+            if _is_auxiliary_http_error_line(line):
+                st.aux_429_count += 1
+            else:
+                st.http_429_503_count += 1
 
-        if "LLM_MONITOR_LLM_CALL_TIMEOUT" in line or (
-            "context deadline exceeded" in line
-            and "play.googleapis.com/log" not in line
-            and "firebaselogging" not in line
-        ):
-            short = line.strip()
-            if len(short) > 140:
-                short = short[-140:]
-            st.timeout_count += 1
-            st.recent_timeouts.append(short)
-            if len(st.recent_timeouts) > 8:
-                del st.recent_timeouts[:-4]
+        if "LLM_MONITOR_LLM_CALL_TIMEOUT" in line or "context deadline exceeded" in line:
+            if "play.googleapis.com/log" in line or "firebaselogging" in line:
+                st.telemetry_timeout_count += 1
+            else:
+                short = strip_glog_init_noise(line.strip())
+                if len(short) > 140:
+                    short = short[-140:]
+                st.timeout_count += 1
+                st.recent_timeouts.append(short)
+                if len(st.recent_timeouts) > 8:
+                    del st.recent_timeouts[:-4]
 
 
 def _fold_main_lines(st: _MainLogCursorState, lines: Sequence[str]) -> None:
@@ -349,12 +454,16 @@ def _build_congestion_stats(ls_st: _LsLogCursorState, main_st: _MainLogCursorSta
         ls_log_lines=ls_st.ls_log_lines,
         capacity_exhausted_count=ls_st.capacity_exhausted_count,
         http_429_503_count=ls_st.http_429_503_count,
+        aux_429_count=ls_st.aux_429_count,
+        telemetry_timeout_count=ls_st.telemetry_timeout_count,
         network_changed_count=main_st.network_changed_count,
         sidecar=SidecarMonitorStats(
             eval_count=ls_st.eval_count,
             avg_ms=avg_ms,
             max_ms=max_ms,
             timeout_count=ls_st.timeout_count,
+            stage1_fail_count=ls_st.stage1_fail_count,
+            stage2_fail_count=ls_st.stage2_fail_count,
             recent_durations_ms=ls_st.recent_durations_ms[-6:],
             recent_timeouts=ls_st.recent_timeouts[-4:],
         ),
