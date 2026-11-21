@@ -6,6 +6,20 @@ All notable changes to **`acerola-orion`** will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-11-21 — Stdlib Microkernel & Slot-Driven Modular UI Architecture
+
+> *"Ask me why I refactored the whole thing? Because I'm the fucking open-source GOAT."*
+
+### Architecture & Refactoring
+- **Zero-Dependency Stdlib Microkernel (`acerola_orion/core/kernel.py`, `core/__init__.py`)**:
+  - Extracted a pure Python standard-library microkernel (`dependencies = []`) providing plugin discovery, dependency ordering, lifecycle hooks, and clean isolation between the public base and external/private plugin packages.
+  - Future features can now be authored as standalone plugins with explicit plugin dependency declarations rather than modifying monolith internals.
+- **Slot-Driven Modular UI (`acerola_orion/ui/**`, `panel.py`)**:
+  - Decomposed the 3,400+ line monolithic `panel.py` into focused, maintainable UI modules: `astrolabe.py`, `charts.py`, `hud.py`, `plugin_host.py`, `radar_controller.py`, `window_chrome.py`, `theme.py`, `widgets.py`, `builtin_tabs.py`, and pluggable tab slots under `ui/tabs/` (`common.py`, `hub_tab.py`, `ledger_tab.py`, `vault_tab.py`, `diag_tab.py`, `zen_view.py`).
+- **Documentation & Verification (`docs/PLUGIN_ARCHITECTURE.md`, `tests/test_kernel.py`, `tests/test_core_hooks.py`, `tests/test_panel_ui_slots.py`)**:
+  - Added plugin architecture specification (`docs/PLUGIN_ARCHITECTURE.md`) detailing hook points, slot registration, and plugin contracts.
+  - Expanded the zero-egress clean-room test suite with 1,400+ lines of kernel, hook, and UI-slot tests (**`42/42` passing**).
+
 ## [1.4.0] - 2026-11-21 — Orion-Vault Time-Vault, Gemini 4 Neon, 200K 2x Pricing Alert & Security Audit Hardening
 
 ### Added

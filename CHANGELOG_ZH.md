@@ -6,6 +6,20 @@
 
 日志格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本 2.0.0 (SemVer)](https://semver.org/lang/zh-CN/)。
 
+## [2.0.0] - 2026-11-21 — 纯标准库微内核与 Slot 插槽驱动模块化 UI 架构重构
+
+> **「问我为什么重构？因为我是他妈的开源 GOAT。」**
+
+### 架构重构
+- **纯标准库微内核底座（`acerola_orion/core/kernel.py`、`core/__init__.py`）**：
+  - 全程保持 **`0` 第三方依赖**（`dependencies = []`），抽离独立微内核与插件发现、依赖声明、生命周期及 Hook 机制，彻底物理隔离公共底座与外部扩展包。
+  - 后续新增功能可直接以插件包形式编写并声明插件依赖，不再硬耦合主仓库内部实现。
+- **Slot 驱动模块化 UI（`acerola_orion/ui/**`、`panel.py`）**：
+  - 将原 3,400+ 行单体 `panel.py` 彻底拆解为职责单一的独立模块：`astrolabe.py`、`charts.py`、`hud.py`、`plugin_host.py`、`radar_controller.py`、`window_chrome.py`、`theme.py`、`widgets.py`、`builtin_tabs.py` 与可插拔页签 `ui/tabs/`（`common.py`、`hub_tab.py`、`ledger_tab.py`、`vault_tab.py`、`diag_tab.py`、`zen_view.py`）。
+- **插件架构文档与测试翻倍加固（`docs/PLUGIN_ARCHITECTURE.md`、`tests/test_kernel.py`、`tests/test_core_hooks.py`、`tests/test_panel_ui_slots.py`）**：
+  - 新增插件架构规范文档 [docs/PLUGIN_ARCHITECTURE.md](./docs/PLUGIN_ARCHITECTURE.md)，明确 Hook 扩展点与 UI Slot 槽位契约。
+  - 新增 1,400+ 行内核、Hook 与 UI Slot 自动化单元测试，零外联净室测试套件扩展至 **`42/42` 项全绿**。
+
 ## [1.4.0] - 2026-11-21 — Orion-Vault 对话时光保险箱、Gemini 4 Neon、200K 双倍预警与安全审计加固
 
 ### 新增功能

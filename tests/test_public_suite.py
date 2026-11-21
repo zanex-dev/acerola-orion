@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Acerola-Orion v1.4.0 Public Edition Verification & Security Self-Audit Suite
+Acerola-Orion v2.0.0 Public Edition Verification & Security Self-Audit Suite
 Runs entirely inside isolated TemporaryDirectory() with zero external network or host side effects.
 """
 
@@ -215,7 +215,7 @@ class AcerolaOrionPublicSuite(unittest.TestCase):
             rpc.ConnectRpcClient(http_port=8080, csrf_token="tok", host="example.com")
 
     def test_02_version_and_model_pricing_math(self) -> None:
-        self.assertEqual(constants.APP_VERSION, "1.4.0")
+        self.assertEqual(constants.APP_VERSION, "2.0.0")
         c4 = constants.classify_model("Gemini 4 Carbon (High)")
         self.assertEqual(c4.family_id, "4c")
         self.assertAlmostEqual(c4.compute_usd(1_000_000, 0, 100_000, 1.0), 6.0)
