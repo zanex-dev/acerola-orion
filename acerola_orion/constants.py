@@ -403,21 +403,26 @@ def _read_config_file_state(path: Path) -> Tuple[Optional[Dict[str, Any]], Optio
     return _salvage_json_dict(text), raw
 
 
-def load_vault_config() -> Dict[str, Any]:
-    """Read `config.json` safely and return normalized vault configuration keys."""
-    p = get_config_path()
+def load_app_config(path: Optional[Path | str] = None) -> Dict[str, Any]:
+    """Read `config.json` safely, preserving all unknown extension keys."""
+    p = Path(path) if path is not None else get_config_path()
     try:
         obj, _corrupt = _read_config_file_state(p)
     except OSError:
         obj = None
-    cfg: Dict[str, Any] = dict(obj) if isinstance(obj, dict) else {}
-    if not isinstance(cfg.get("vault_auto_backup"), bool):
-        cfg["vault_auto_backup"] = bool(cfg.get("vault_auto_backup", True))
-    return cfg
+    return dict(obj) if isinstance(obj, dict) else {}
 
 
-def _update_vault_config(mutator: Callable[[Dict[str, Any]], None]) -> Dict[str, Any]:
-    p = get_config_path()
+def update_app_config(
+    mutator: Callable[[Dict[str, Any]], Any],
+    path: Optional[Path | str] = None,
+) -> Dict[str, Any]:
+    """
+    Atomically read-modify-write `config.json` under an inter-process lock.
+    Corrupt files are backed up as `<name>.corrupt-<ts>.bak`; unknown extension keys
+    are preserved verbatim across updates.
+    """
+    p = Path(path) if path is not None else get_config_path()
     with interprocess_file_lock(p):
         obj, corrupt_raw = _read_config_file_state(p)
         if corrupt_raw is not None:
@@ -429,11 +434,28 @@ def _update_vault_config(mutator: Callable[[Dict[str, Any]], None]) -> Dict[str,
                 n += 1
             backup.write_bytes(corrupt_raw)
         cfg: Dict[str, Any] = dict(obj) if isinstance(obj, dict) else {}
+        updated = mutator(cfg)
+        if isinstance(updated, dict):
+            cfg = dict(updated)
+        atomic_write_text(p, json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        return cfg
+
+
+def load_vault_config() -> Dict[str, Any]:
+    """Read `config.json` safely and return normalized vault configuration keys."""
+    cfg = load_app_config()
+    if not isinstance(cfg.get("vault_auto_backup"), bool):
+        cfg["vault_auto_backup"] = bool(cfg.get("vault_auto_backup", True))
+    return cfg
+
+
+def _update_vault_config(mutator: Callable[[Dict[str, Any]], None]) -> Dict[str, Any]:
+    def _wrapped(cfg: Dict[str, Any]) -> None:
         if not isinstance(cfg.get("vault_auto_backup"), bool):
             cfg["vault_auto_backup"] = bool(cfg.get("vault_auto_backup", True))
         mutator(cfg)
-        atomic_write_text(p, json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-        return cfg
+
+    return update_app_config(_wrapped)
 
 
 def is_vault_auto_backup_enabled() -> bool:

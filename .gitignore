@@ -13,3 +13,4 @@ venv/
 *.db
 *.sqlite3
 .acerola_orion_local/
+_versions/

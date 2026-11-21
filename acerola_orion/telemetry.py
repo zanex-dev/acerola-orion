@@ -27,6 +27,7 @@ from .constants import (
     get_main_log_path,
     get_user_settings_path,
 )
+from .core.kernel import get_kernel
 from .rpc import (
     ConnectRpcClient,
     ConnectRpcError,
@@ -95,6 +96,7 @@ class GuardStatusView:
     scheduled_task_installed: bool = False
     legacy_buggy_killer_active: bool = False
     legacy_pids: List[int] = field(default_factory=list)
+    extensions: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -120,6 +122,7 @@ class OrionTelemetryReport:
     log_stats: LogCongestionStats = field(default_factory=LogCongestionStats)
     guard: GuardStatusView = field(default_factory=GuardStatusView)
     rpc_errors: List[str] = field(default_factory=list)
+    extensions: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         # Strict-JSON safe: NaN / Inf (unknown quota) are emitted as null, never as bare `NaN`.
@@ -648,6 +651,7 @@ def probe_guard_status(entries: Optional[List[RawProcEntry]] = None) -> GuardSta
                 except Exception:
                     pass
 
+    get_kernel().bus.emit("probe_guard", view)
     return view
 
 
@@ -710,6 +714,7 @@ def collect_telemetry(include_guard_check: bool = True) -> OrionTelemetryReport:
     )
 
     if not ls_state.running or not ls_state.hub:
+        get_kernel().bus.emit("enrich_telemetry", report)
         return report
 
     client = ConnectRpcClient.from_hub(ls_state.hub)
@@ -783,4 +788,5 @@ def collect_telemetry(include_guard_check: bool = True) -> OrionTelemetryReport:
     except ConnectRpcError as e:
         report.rpc_errors.append(str(e))
 
+    get_kernel().bus.emit("enrich_telemetry", report)
     return report

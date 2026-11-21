@@ -1,19 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-Acerola-Orion 桌面星盘主控台 (acerola_orion/panel.py)
-- 视觉升级：猎户座星盘 · 精密机械双轨计时仪 (Orion Astrolabe & Chronograph)
-- 双视图模式无缝切换：
-  1) 全盘观测台 (Full Mode)：双座猎户座星盘计时仪 + 预设倍率对账账本 + 对话防删保险箱 + 事件驱动断头台 + 风控示波台
-  2) 极简专注模式 (Zen Mode)：专为直观展示设计，同屏严格遵循「1 个核心数据 + 1 张统计图」
-- 原生 Win32 DWM 沉浸式暗黑标题栏 + 全分辨率 High-DPI 自适应 + 低开销托盘休眠
+Acerola-Orion 桌面星盘主控台薄壳与插件宿主 (acerola_orion/panel.py)
+- 视觉控件位于 `acerola_orion.ui.widgets`，内置 4 标签页与禅定模式位于 `acerola_orion.ui.builtin_tabs`
+- 通过 `PanelPluginHost` 向微内核插件 (`OrionPlugin.register_ui`) 开放动态 Tab、Hub 动作槽、
+  托盘菜单、KV 缓存雷达自定义刻度线与顶栏状态徽章插槽
+- 保持顶层全部公共类/函数/常量 100% 向后兼容导出
 """
 
 from __future__ import annotations
 
 import ctypes
 from ctypes import wintypes
-from datetime import datetime, timezone
+from datetime import datetime
 import json
+import logging
 import math
 from pathlib import Path
 import queue
@@ -36,11 +36,8 @@ from .cache_radar import (
     TARGET_MODE_PINNED,
     TARGET_MODE_SMART_GUARD,
     VALID_HUD_MODES,
-    VALID_TARGET_MODES,
     CacheRadarSampler,
     CacheRadarState,
-    RadarSessionCandidate,
-    format_mmss,
     format_tokens_compact,
     normalize_hud_mode,
     normalize_target_mode,
@@ -57,18 +54,90 @@ from .constants import (
     interprocess_file_lock,
     is_vault_auto_backup_enabled,
 )
+from .core.kernel import get_kernel
 from .guillotine import install_guard_autostart, uninstall_guard_autostart
 from .ledger import OrionLedger
 from .rpc import read_shared_file_lines, terminate_pid_win32
 from .telemetry import (
     OrionTelemetryReport,
     collect_telemetry,
-    describe_quota_timer,
     invalidate_guard_probe_cache,
     load_json_safe,
-    strip_glog_init_noise,
 )
-from .vault import OrionVault, VaultSessionItem, VaultStatusReport, _fmt_cn_time
+from .ui.builtin_tabs import (
+    apply_builtin_tabs_data,
+    build_daily_spend_points,
+    build_diag_tab,
+    build_header,
+    build_hub_tab,
+    build_ledger_tab,
+    build_quota_points,
+    build_vault_tab,
+    build_zen_mode_ui,
+    configure_styles,
+    create_dark_text_box,
+    create_scrolled_treeview,
+    draw_mini_emblem,
+    make_instrument_plate,
+    refresh_active_charts_and_zen,
+)
+from .ui.plugin_host import PanelPluginHost, _BUILTIN_TAB_KEYS, _normalize_radar_marker
+from .ui import radar_controller as _rc
+from .ui.window_chrome import (
+    APP_USER_MODEL_ID,
+    TRAY_CLASS_NAME,
+    _UNSET,
+    _activate_existing_panel_window,
+    _apply_win32_dark_chrome,
+    _enable_high_dpi,
+    _get_icon_path,
+    _get_ui_prefs_path,
+    _load_ui_prefs,
+    _panel_window_title,
+    _save_ui_prefs,
+    _terminate_existing_panel_instance,
+)
+from .ui.widgets import (
+    ACCENT_AMBER,
+    ACCENT_AMBER_DIM,
+    ACCENT_CRIMSON,
+    ACCENT_CRIMSON_DIM,
+    ACCENT_CYAN,
+    ACCENT_CYAN_DIM,
+    ACCENT_GOLD,
+    ACCENT_GREEN,
+    ACCENT_GREEN_DIM,
+    ACCENT_ROSE,
+    ACCENT_VIOLET,
+    BG_CARD,
+    BG_CARD_ALT,
+    BG_DIAL_WELL,
+    BG_HEADER,
+    BG_ROOT,
+    BG_VOID,
+    BORDER_ACTIVE,
+    BORDER_CRIMSON,
+    BORDER_SUBTLE,
+    FG_DIM,
+    FG_MUTED,
+    FG_SUB,
+    FG_TEXT,
+    HUD_MODE_LABELS,
+    PALETTE,
+    TARGET_MODE_LABELS,
+    AstrolabeDialWidget,
+    CacheRadarHudWindow,
+    OrionChartWidget,
+    QuotaBarWidget,
+    _compose_tray_tooltip,
+    _compute_remaining_window_fraction,
+    _quota_semantic_colors,
+    _radar_palette,
+    _rotated_ellipse_points,
+    _virtual_screen_rect,
+    clamp_hud_coords,
+)
+from .vault import OrionVault, VaultSessionItem, VaultStatusReport
 from .win_tray import (
     MenuSpec,
     Win32TrayController,
@@ -78,1464 +147,7 @@ from .win_tray import (
     signal_existing_instance,
 )
 
-APP_USER_MODEL_ID = "Trinity.AcerolaOrion.PublicAstrolabe"
-TRAY_CLASS_NAME = "AcerolaOrionPublicAstrolabe_v2"
-
-# Obsidian + Kiss-Shot Crimson + Orion Starlight Palette
-BG_VOID = "#08060c"
-BG_ROOT = "#0c0912"
-BG_HEADER = "#120a18"
-BG_CARD = "#14101d"
-BG_CARD_ALT = "#1c1528"
-BG_DIAL_WELL = "#0e0b15"
-FG_TEXT = "#f8fafc"
-FG_SUB = "#cbd5e1"
-FG_MUTED = "#8b9bb4"
-FG_DIM = "#526077"
-
-ACCENT_CRIMSON = "#e11d48"
-ACCENT_CRIMSON_DIM = "#4c0519"
-ACCENT_ROSE = "#fb7185"
-ACCENT_CYAN = "#38bdf8"
-ACCENT_CYAN_DIM = "#0c2d48"
-ACCENT_GREEN = "#10b981"
-ACCENT_GREEN_DIM = "#063b2b"
-ACCENT_AMBER = "#f59e0b"
-ACCENT_AMBER_DIM = "#452706"
-ACCENT_GOLD = "#fde047"
-ACCENT_VIOLET = "#a78bfa"
-
-BORDER_SUBTLE = "#261d36"
-BORDER_CRIMSON = "#54162b"
-BORDER_ACTIVE = "#be123c"
-
-
-def _panel_window_title() -> str:
-    return f"{APP_CODENAME} v{APP_VERSION} · Astrolabe — {APP_TRINITY}"
-
-
-def _enable_high_dpi() -> None:
-    if sys.platform == "win32":
-        try:
-            ctypes.windll.shcore.SetProcessDpiAwareness(1)
-        except Exception:
-            try:
-                ctypes.windll.user32.SetProcessDPIAware()
-            except Exception:
-                pass
-
-
-def _apply_win32_dark_chrome(win: tk.Tk) -> None:
-    """Apply native Windows 10/11 DWM immersive dark titlebar and obsidian caption/border tint."""
-    if sys.platform != "win32":
-        return
-    try:
-        win.update_idletasks()
-        hwnd = int(win.winfo_id())
-        parent = ctypes.windll.user32.GetParent(wintypes.HWND(hwnd))
-        target = int(parent) if parent else hwnd
-        dwm = ctypes.windll.dwmapi
-        dark_val = ctypes.c_int(1)
-        for attr in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE
-            if dwm.DwmSetWindowAttribute(
-                wintypes.HWND(target),
-                ctypes.c_uint(attr),
-                ctypes.byref(dark_val),
-                ctypes.sizeof(dark_val),
-            ) == 0:
-                break
-        # Windows 11 DWMWA_CAPTION_COLOR (35) & DWMWA_BORDER_COLOR (34), COLORREF = 0x00BBGGRR
-        cap_color = ctypes.c_uint(0x00180A12)  # #120a18
-        bdr_color = ctypes.c_uint(0x00361D26)  # #261d36
-        dwm.DwmSetWindowAttribute(
-            wintypes.HWND(target), ctypes.c_uint(35), ctypes.byref(cap_color), ctypes.sizeof(cap_color)
-        )
-        dwm.DwmSetWindowAttribute(
-            wintypes.HWND(target), ctypes.c_uint(34), ctypes.byref(bdr_color), ctypes.sizeof(bdr_color)
-        )
-    except Exception:
-        pass
-
-
-def _get_icon_path() -> Path:
-    return Path(__file__).resolve().parent.parent / "assets" / "app.ico"
-
-
-_UNSET = object()
-
-HUD_MODE_LABELS: Dict[str, str] = {
-    "smart": "智能预警",
-    "always": "常驻胶囊",
-    "off": "关闭胶囊",
-}
-
-TARGET_MODE_LABELS: Dict[str, str] = {
-    TARGET_MODE_SMART_GUARD: "智能守大窗 (≥100K未冷优先)",
-    TARGET_MODE_LATEST: "跟随最新活跃窗口",
-    TARGET_MODE_PINNED: "手动锁定指定窗口",
-}
-
-
-def _get_ui_prefs_path() -> Path:
-    return get_data_dir() / "ui_prefs.json"
-
-
-def _load_ui_prefs() -> Dict[str, Any]:
-    raw = load_json_safe(_get_ui_prefs_path(), default={})
-    mode = str(raw.get("view_mode") or "full").strip().lower()
-    if mode not in ("full", "zen"):
-        mode = "full"
-    metric = str(raw.get("zen_metric") or "gemini").strip().lower()
-    if metric not in ("gemini", "claude", "spend", "latency", "cache"):
-        metric = "gemini"
-    hud_mode = normalize_hud_mode(raw.get("hud_mode"))
-    t_mode, pin_cid = normalize_target_mode(raw.get("radar_target_mode"), raw.get("radar_pinned_conv_id"))
-    raw_x = raw.get("hud_x")
-    raw_y = raw.get("hud_y")
-    hud_x: Optional[int] = None
-    hud_y: Optional[int] = None
-    try:
-        if raw_x is not None and not isinstance(raw_x, bool) and raw_y is not None and not isinstance(raw_y, bool):
-            fx, fy = float(raw_x), float(raw_y)
-            if math.isfinite(fx) and math.isfinite(fy):
-                hud_x, hud_y = int(fx), int(fy)
-    except (TypeError, ValueError):
-        hud_x, hud_y = None, None
-    return {
-        "view_mode": mode,
-        "zen_metric": metric,
-        "hud_mode": hud_mode,
-        "radar_target_mode": t_mode,
-        "radar_pinned_conv_id": pin_cid,
-        "hud_x": hud_x,
-        "hud_y": hud_y,
-    }
-
-
-def _save_ui_prefs(
-    view_mode: Optional[str] = None,
-    zen_metric: Optional[str] = None,
-    *,
-    hud_mode: Optional[str] = None,
-    radar_target_mode: Optional[str] = None,
-    radar_pinned_conv_id: Optional[str] = None,
-    hud_x: Any = _UNSET,
-    hud_y: Any = _UNSET,
-) -> None:
-    try:
-        prefs_path = _get_ui_prefs_path()
-        with interprocess_file_lock(prefs_path):
-            cur = _load_ui_prefs()
-            if view_mode in ("full", "zen"):
-                cur["view_mode"] = view_mode
-            if zen_metric in ("gemini", "claude", "spend", "latency", "cache"):
-                cur["zen_metric"] = zen_metric
-            if hud_mode is not None:
-                cur["hud_mode"] = normalize_hud_mode(hud_mode)
-            if radar_target_mode is not None or radar_pinned_conv_id is not None:
-                tm_in = radar_target_mode if radar_target_mode is not None else cur["radar_target_mode"]
-                pc_in = radar_pinned_conv_id if radar_pinned_conv_id is not None else cur["radar_pinned_conv_id"]
-                tm_norm, pc_norm = normalize_target_mode(tm_in, pc_in)
-                cur["radar_target_mode"] = tm_norm
-                cur["radar_pinned_conv_id"] = pc_norm
-            if hud_x is not _UNSET:
-                cur["hud_x"] = int(hud_x) if hud_x is not None else None
-            if hud_y is not _UNSET:
-                cur["hud_y"] = int(hud_y) if hud_y is not None else None
-            payload = json.dumps(cur, ensure_ascii=False, indent=2)
-            atomic_write_text(prefs_path, payload)
-    except Exception:
-        pass
-
-
-def _radar_palette(state: CacheRadarState) -> Tuple[str, str, str]:
-    """Return `(fg_color, bar_color, border_color)` matching Obsidian + Crimson Astrolabe palette."""
-    if state.phase == PHASE_ACTIVE:
-        fg, bar, border = (ACCENT_CYAN, ACCENT_CYAN, "#1e3a5f")
-    elif state.phase == PHASE_HOT:
-        fg, bar, border = (ACCENT_GREEN, ACCENT_GREEN, BORDER_SUBTLE)
-    elif state.phase == PHASE_WARNING:
-        if state.remaining_sec <= 30.0:
-            fg, bar, border = (ACCENT_ROSE, ACCENT_CRIMSON, ACCENT_CRIMSON)
-        else:
-            fg, bar, border = (ACCENT_AMBER, ACCENT_AMBER, ACCENT_CRIMSON)
-    elif state.phase == PHASE_COLD:
-        if state.context_tokens >= LARGE_CONTEXT_HINT_TOKENS:
-            fg, bar, border = (ACCENT_AMBER, "#475569", "#78350f")
-        else:
-            fg, bar, border = (FG_MUTED, "#334155", BORDER_SUBTLE)
-    else:
-        return (FG_MUTED, "#1e1b29", BORDER_SUBTLE)
-
-    if getattr(state, "is_over_2x", False):
-        border = ACCENT_CRIMSON
-    elif getattr(state, "is_near_2x", False) and border in (BORDER_SUBTLE, "#1e3a5f", "#78350f"):
-        border = ACCENT_AMBER
-    return (fg, bar, border)
-
-
-def clamp_hud_coords(
-    x: Optional[int],
-    y: Optional[int],
-    req_w: int,
-    req_h: int,
-    screen_rect: Tuple[int, int, int, int],
-    margin: int = 16,
-) -> Tuple[int, int]:
-    """Clamp HUD `(x, y)` inside virtual desktop `screen_rect=(vx, vy, vw, vh)`, or pick top-right default."""
-    vx, vy, vw, vh = screen_rect
-    w = max(80, int(req_w))
-    h = max(24, int(req_h))
-    m = max(4, int(margin))
-    if x is None or y is None:
-        tx = vx + vw - w - m * 2
-        ty = vy + m * 3
-    else:
-        tx = int(x)
-        ty = int(y)
-    min_x = vx + m
-    max_x = max(min_x, vx + vw - w - m)
-    min_y = vy + m
-    max_y = max(min_y, vy + vh - h - m)
-    return (max(min_x, min(max_x, tx)), max(min_y, min(max_y, ty)))
-
-
-def _virtual_screen_rect(widget: tk.Misc) -> Tuple[int, int, int, int]:
-    if sys.platform == "win32":
-        try:
-            u32 = ctypes.windll.user32
-            vx = int(u32.GetSystemMetrics(76))
-            vy = int(u32.GetSystemMetrics(77))
-            vw = int(u32.GetSystemMetrics(78))
-            vh = int(u32.GetSystemMetrics(79))
-            if vw >= 640 and vh >= 480:
-                return (vx, vy, vw, vh)
-        except Exception:
-            pass
-    try:
-        sw = max(800, int(widget.winfo_screenwidth()))
-        sh = max(600, int(widget.winfo_screenheight()))
-    except Exception:
-        sw, sh = 1920, 1080
-    return (0, 0, sw, sh)
-
-
-def _compose_tray_tooltip(base_line: str, radar_state: Optional[CacheRadarState]) -> str:
-    """Compose Win32 127-WCHAR safe tray tooltip appending live KV Cache Radar status."""
-    base = (base_line or "").strip()
-    if radar_state is None or not radar_state.tooltip_suffix:
-        return base[:127]
-    combined = f"{base}\n{radar_state.tooltip_suffix}"
-    if len(combined) <= 127:
-        return combined
-    budget = max(24, 126 - len(radar_state.tooltip_suffix))
-    return f"{base[:budget]}\n{radar_state.tooltip_suffix}"[:127]
-
-
-class CacheRadarHudWindow(tk.Toplevel):
-    """
-    Frameless, always-on-top High-DPI Obsidian+Crimson mini floating capsule HUD (100% passive read-only).
-    Supports mouse dragging with coordinate persistence, double-click panel wakeup, window-target switching,
-    200K 2x pricing tier indicator, and quick `/compact` copy.
-    """
-
-    def __init__(
-        self,
-        master: tk.Misc,
-        dpi_scale: float,
-        initial_pos: Optional[Tuple[int, int]],
-        on_drag_end: Callable[[int, int], None],
-        on_select_mode: Callable[[str], Any],
-        on_open_panel: Callable[[], None],
-        hud_mode_getter: Optional[Callable[[], str]] = None,
-        target_getter: Optional[Callable[[], Tuple[str, str]]] = None,
-        sessions_provider: Optional[Callable[[], Sequence[RadarSessionCandidate]]] = None,
-        on_select_target: Optional[Callable[[str, str], Any]] = None,
-        on_copy_compact: Optional[Callable[[], Any]] = None,
-    ) -> None:
-        super().__init__(master, bg=BG_ROOT)
-        self.withdraw()
-        self._dpi_scale = max(1.0, float(dpi_scale))
-        self._saved_pos: Optional[Tuple[int, int]] = initial_pos
-        self._on_drag_end = on_drag_end
-        self._on_select_mode = on_select_mode
-        self._on_open_panel = on_open_panel
-        self._hud_mode_getter = hud_mode_getter
-        self._target_getter = target_getter
-        self._sessions_provider = sessions_provider
-        self._on_select_target = on_select_target
-        self._on_copy_compact = on_copy_compact
-        self._is_shown = False
-        self._positioned_once = False
-        self._drag_origin: Optional[Tuple[int, int, int, int]] = None
-        self._drag_moved = False
-        self._fraction = 0.0
-        self._bar_color = BORDER_SUBTLE
-        self._toast_text = ""
-        self._toast_until_mono = 0.0
-        self._hud_tier_packed = False
-
-        try:
-            self.overrideredirect(True)
-        except Exception:
-            pass
-        try:
-            self.attributes("-topmost", True)
-        except Exception:
-            pass
-        try:
-            self.attributes("-alpha", 0.94)
-        except Exception:
-            pass
-
-        self.shell = tk.Frame(
-            self,
-            bg="#120d18",
-            highlightthickness=1,
-            highlightbackground=BORDER_SUBTLE,
-        )
-        self.shell.pack(fill=tk.BOTH, expand=True)
-
-        row = tk.Frame(self.shell, bg="#120d18")
-        row.pack(fill=tk.X)
-
-        self.accent_strip = tk.Frame(row, bg=ACCENT_CRIMSON, width=self._px(4))
-        self.accent_strip.pack(side=tk.LEFT, fill=tk.Y)
-
-        self.lbl_capsule = tk.Label(
-            row,
-            text="⚪ 缓存雷达待命",
-            bg="#120d18",
-            fg=FG_TEXT,
-            font=("Microsoft YaHei UI", 9, "bold"),
-            padx=self._px(10),
-            pady=self._px(5),
-            cursor="fleur",
-        )
-        self.lbl_capsule.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        self.lbl_hud_tier = tk.Label(
-            row,
-            text="",
-            bg="#4c0519",
-            fg="#fda4af",
-            font=("Microsoft YaHei UI", 8, "bold"),
-            padx=self._px(6),
-            pady=self._px(2),
-            cursor="fleur",
-        )
-
-        self.bar_canvas = tk.Canvas(
-            self.shell,
-            height=max(2, self._px(3)),
-            bg=BG_VOID,
-            highlightthickness=0,
-        )
-        self.bar_canvas.pack(fill=tk.X)
-        self.bar_canvas.bind("<Configure>", lambda _e: self._redraw_bar())
-
-        self._ctx_menu = tk.Menu(
-            self,
-            tearoff=0,
-            bg="#16111f",
-            fg=FG_TEXT,
-            activebackground=ACCENT_CRIMSON,
-            activeforeground="#ffffff",
-            font=("Microsoft YaHei UI", 9),
-        )
-        self._rebuild_ctx_menu()
-
-        for w in (self.shell, row, self.accent_strip, self.lbl_capsule, self.lbl_hud_tier, self.bar_canvas):
-            w.bind("<ButtonPress-1>", self._on_press)
-            w.bind("<B1-Motion>", self._on_motion)
-            w.bind("<ButtonRelease-1>", self._on_release)
-            w.bind("<Double-Button-1>", lambda _e: self._on_open_panel())
-            w.bind("<Button-3>", self._on_right_click)
-
-    def _px(self, base: int) -> int:
-        return int(round(base * self._dpi_scale))
-
-    def flash_toast(self, text: str, duration_sec: float = 1.6) -> None:
-        self._toast_text = str(text or "").strip()
-        self._toast_until_mono = time.monotonic() + max(0.3, float(duration_sec))
-        if self._toast_text:
-            try:
-                self.lbl_capsule.configure(text=self._toast_text, fg=ACCENT_CYAN)
-            except Exception:
-                pass
-
-    def _rebuild_ctx_menu(self) -> None:
-        self._ctx_menu.delete(0, tk.END)
-        cur_hud = self._hud_mode_getter() if self._hud_mode_getter is not None else ""
-        t_mode, pin_cid = self._target_getter() if self._target_getter is not None else (TARGET_MODE_SMART_GUARD, "")
-
-        if self._on_copy_compact is not None:
-            self._ctx_menu.add_command(
-                label=f"✂️ 复制上下文压缩口令 (「{COMPACT_COMMAND_TEXT}」· 压回 200K 内免双倍计价)",
-                command=self._on_copy_compact,
-            )
-            self._ctx_menu.add_separator()
-
-        if self._on_select_target is not None:
-            sel_fn = self._on_select_target
-            b_smart = "● " if t_mode == TARGET_MODE_SMART_GUARD else "○ "
-            b_latest = "● " if t_mode == TARGET_MODE_LATEST else "○ "
-            self._ctx_menu.add_command(
-                label=f"{b_smart}🧠 监控窗口 · 智能守大窗 (≥100K未冷优先)",
-                command=lambda: sel_fn(TARGET_MODE_SMART_GUARD, ""),
-            )
-            self._ctx_menu.add_command(
-                label=f"{b_latest}🔄 监控窗口 · 纯跟随最新活跃",
-                command=lambda: sel_fn(TARGET_MODE_LATEST, ""),
-            )
-            sessions: Sequence[RadarSessionCandidate] = ()
-            if self._sessions_provider is not None:
-                try:
-                    sessions = self._sessions_provider()
-                except Exception:
-                    sessions = ()
-            for cand in list(sessions)[:6]:
-                is_pin = t_mode == TARGET_MODE_PINNED and pin_cid and cand.conv_id.lower() == pin_cid.lower()
-                mark = "● " if is_pin else "○ "
-                self._ctx_menu.add_command(
-                    label=f"{mark}📌 锁定: {cand.menu_label}",
-                    command=lambda cid=cand.conv_id: sel_fn(TARGET_MODE_PINNED, cid),
-                )
-            self._ctx_menu.add_separator()
-
-        m_smart = "● " if cur_hud == "smart" else ("○ " if cur_hud else "")
-        m_always = "● " if cur_hud == "always" else ("○ " if cur_hud else "")
-        m_off = "● " if cur_hud == "off" else ("○ " if cur_hud else "")
-        self._ctx_menu.add_command(
-            label=f"{m_smart}🎯 智能预警 (≥100K 临期自动弹出)",
-            command=lambda: self._on_select_mode("smart"),
-        )
-        self._ctx_menu.add_command(
-            label=f"{m_always}📌 常驻悬浮胶囊",
-            command=lambda: self._on_select_mode("always"),
-        )
-        self._ctx_menu.add_command(
-            label=f"{m_off}🚫 关闭悬浮胶囊",
-            command=lambda: self._on_select_mode("off"),
-        )
-        self._ctx_menu.add_separator()
-        self._ctx_menu.add_command(label="✦ 打开猎户座星盘主控台", command=self._on_open_panel)
-
-    def _redraw_bar(self) -> None:
-        self.bar_canvas.delete("all")
-        w = max(10, int(self.bar_canvas.winfo_width()))
-        h = max(2, int(self.bar_canvas.winfo_height()))
-        self.bar_canvas.create_rectangle(0, 0, w, h, fill=BG_VOID, outline="")
-        fw = int(round(w * max(0.0, min(1.0, self._fraction))))
-        if fw > 0:
-            self.bar_canvas.create_rectangle(0, 0, fw, h, fill=self._bar_color, outline="")
-
-    def _ensure_geometry(self) -> None:
-        try:
-            self.update_idletasks()
-            req_w = max(self._px(160), int(self.winfo_reqwidth()))
-            req_h = max(self._px(28), int(self.winfo_reqheight()))
-            rect = _virtual_screen_rect(self)
-            px_x = self._saved_pos[0] if self._saved_pos is not None else None
-            px_y = self._saved_pos[1] if self._saved_pos is not None else None
-            cx, cy = clamp_hud_coords(px_x, px_y, req_w, req_h, rect, margin=self._px(16))
-            self._saved_pos = (cx, cy)
-            self.geometry(f"+{cx}+{cy}")
-            self._positioned_once = True
-        except Exception:
-            pass
-
-    def render_state(self, state: CacheRadarState, visible: bool) -> None:
-        fg_color, bar_color, border_color = _radar_palette(state)
-        self._fraction = state.ttl_fraction
-        self._bar_color = bar_color
-        toast_active = bool(self._toast_text and time.monotonic() < self._toast_until_mono)
-        if toast_active:
-            self.lbl_capsule.configure(text=self._toast_text, fg=ACCENT_CYAN)
-        else:
-            self._toast_text = ""
-            self.lbl_capsule.configure(text=state.capsule_text, fg=fg_color)
-
-        hud_tag = "" if toast_active else str(getattr(state, "hud_tier_tag", "") or "")
-        if hud_tag:
-            is_2x = bool(getattr(state, "is_over_2x", False))
-            self.lbl_hud_tier.configure(
-                text=hud_tag,
-                bg="#4c0519" if is_2x else "#451a03",
-                fg="#fda4af" if is_2x else "#fcd34d",
-            )
-            if not self._hud_tier_packed:
-                self.lbl_hud_tier.pack(side=tk.LEFT, padx=(0, self._px(6)), pady=self._px(3))
-                self._hud_tier_packed = True
-                if self._positioned_once:
-                    self._ensure_geometry()
-        elif self._hud_tier_packed:
-            self.lbl_hud_tier.pack_forget()
-            self._hud_tier_packed = False
-
-        self.accent_strip.configure(bg=ACCENT_CRIMSON if getattr(state, "is_over_2x", False) else bar_color)
-        self.shell.configure(highlightbackground=border_color)
-        self._redraw_bar()
-
-        if visible:
-            if not self._positioned_once:
-                self._ensure_geometry()
-            if not self._is_shown:
-                self._is_shown = True
-                try:
-                    self.deiconify()
-                    self.lift()
-                    self.attributes("-topmost", True)
-                except Exception:
-                    pass
-        else:
-            if self._is_shown:
-                self._is_shown = False
-                try:
-                    self.withdraw()
-                except Exception:
-                    pass
-
-    def _on_press(self, event: tk.Event) -> None:  # type: ignore[type-arg]
-        try:
-            self._drag_origin = (int(event.x_root), int(event.y_root), int(self.winfo_x()), int(self.winfo_y()))
-            self._drag_moved = False
-        except Exception:
-            self._drag_origin = None
-
-    def _on_motion(self, event: tk.Event) -> None:  # type: ignore[type-arg]
-        if self._drag_origin is None:
-            return
-        ox, oy, wx, wy = self._drag_origin
-        dx = int(event.x_root) - ox
-        dy = int(event.y_root) - oy
-        if abs(dx) + abs(dy) >= 3:
-            self._drag_moved = True
-        try:
-            req_w = max(80, int(self.winfo_width()))
-            req_h = max(24, int(self.winfo_height()))
-            nx, ny = clamp_hud_coords(
-                wx + dx,
-                wy + dy,
-                req_w,
-                req_h,
-                _virtual_screen_rect(self),
-                margin=self._px(6),
-            )
-            self._saved_pos = (nx, ny)
-            self.geometry(f"+{nx}+{ny}")
-        except Exception:
-            pass
-
-    def _on_release(self, _event: tk.Event) -> None:  # type: ignore[type-arg]
-        moved = self._drag_moved
-        pos = self._saved_pos
-        self._drag_origin = None
-        self._drag_moved = False
-        if moved and pos is not None:
-            try:
-                self._on_drag_end(pos[0], pos[1])
-            except Exception:
-                pass
-
-    def _on_right_click(self, event: tk.Event) -> None:  # type: ignore[type-arg]
-        try:
-            self._rebuild_ctx_menu()
-            self._ctx_menu.tk_popup(int(event.x_root), int(event.y_root))
-        finally:
-            try:
-                self._ctx_menu.grab_release()
-            except Exception:
-                pass
-
-    def destroy(self) -> None:
-        try:
-            if getattr(self, "_ctx_menu", None) is not None:
-                self._ctx_menu.delete(0, tk.END)
-        except Exception:
-            pass
-        super().destroy()
-
-
-def _activate_existing_panel_window() -> bool:
-    """If an identical-version panel (or tray-resident instance) is already open, restore and focus it."""
-    return signal_existing_instance(TRAY_CLASS_NAME, _panel_window_title())
-
-
-def _compute_remaining_window_fraction(reset_iso: str, window_sec: float = 18000.0) -> Optional[float]:
-    """Compute remaining time fraction [0..1] within the quota rolling window from ISO reset timestamp."""
-    if not reset_iso or window_sec <= 0:
-        return None
-    try:
-        s = reset_iso.strip()
-        if not s:
-            return None
-        if s.endswith("Z") or s.endswith("z"):
-            s = s[:-1] + "+00:00"
-        target = datetime.fromisoformat(s)
-        if target.tzinfo is None:
-            target = target.replace(tzinfo=timezone.utc)
-        rem = (target - datetime.now(timezone.utc)).total_seconds()
-        if not math.isfinite(rem) or rem < 0:
-            return 0.0
-        if rem > window_sec * 1.05:
-            return None
-        return max(0.0, min(1.0, rem / window_sec))
-    except Exception:
-        return None
-
-
-def _quota_semantic_colors(pct: float, primary_hue: str = "cyan") -> Tuple[str, str]:
-    """Return (bright_hex, dim_halo_hex) for a 0..100 percentage."""
-    if not math.isfinite(pct):
-        return FG_DIM, "#1c1629"
-    if pct < 18.0:
-        return ACCENT_CRIMSON, ACCENT_CRIMSON_DIM
-    if pct < 38.0:
-        return ACCENT_AMBER, ACCENT_AMBER_DIM
-    if primary_hue == "rose":
-        return ACCENT_ROSE, "#3f1024"
-    if primary_hue == "emerald":
-        return ACCENT_GREEN, ACCENT_GREEN_DIM
-    return ACCENT_CYAN, ACCENT_CYAN_DIM
-
-
-def _rotated_ellipse_points(
-    cx: float, cy: float, rx: float, ry: float, deg: float, steps: int = 48
-) -> List[float]:
-    rad = math.radians(deg)
-    ca, sa = math.cos(rad), math.sin(rad)
-    pts: List[float] = []
-    for i in range(steps + 1):
-        t = (2.0 * math.pi * i) / steps
-        ex = rx * math.cos(t)
-        ey = ry * math.sin(t)
-        pts.append(cx + ex * ca - ey * sa)
-        pts.append(cy + ex * sa + ey * ca)
-    return pts
-
-
-class QuotaBarWidget(tk.Frame):
-    """Backward-compatible compact linear bar widget with anti-truncation & deferred single-shot redraw."""
-
-    def __init__(self, parent: tk.Widget, title: str, bar_height: int = 10, default_window: str = "") -> None:
-        super().__init__(
-            parent, bg=BG_CARD, highlightthickness=1, highlightbackground=BORDER_SUBTLE, padx=10, pady=6
-        )
-        self._default_window = default_window
-        top = tk.Frame(self, bg=BG_CARD)
-        top.pack(fill=tk.X)
-        # Anti-clipping rule: pack right-aligned percentage readout BEFORE left-aligned elastic title
-        self.lbl_pct = tk.Label(
-            top, text="--.---%", bg=BG_CARD, fg=ACCENT_CYAN, font=("Consolas", 10, "bold")
-        )
-        self.lbl_pct.pack(side=tk.RIGHT, padx=(6, 0))
-        self.lbl_title = tk.Label(
-            top, text=title, bg=BG_CARD, fg=FG_TEXT, font=("Microsoft YaHei UI", 9, "bold"), anchor="w"
-        )
-        self.lbl_title.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self.canvas = tk.Canvas(self, height=bar_height, bg=BG_VOID, highlightthickness=0)
-        self.canvas.pack(fill=tk.X, pady=(4, 3))
-        self.lbl_sub = tk.Label(
-            self, text="等待采样...", bg=BG_CARD, fg=FG_MUTED, font=("Microsoft YaHei UI", 8), anchor="w", justify="left"
-        )
-        self.lbl_sub.pack(anchor="w", fill=tk.X)
-        self._fraction = 0.0
-        self._timer_started = True
-        self._deferred_redraw_pending = False
-        self.canvas.bind("<Configure>", lambda _e: self._redraw(allow_defer=False))
-        self.bind("<Configure>", self._on_card_configure)
-
-    def _on_card_configure(self, event: tk.Event) -> None:
-        self.lbl_sub.configure(wraplength=max(140, int(event.width) - 24))
-        if int(self.canvas.winfo_width()) <= 10:
-            self._redraw(allow_defer=False)
-
-    def update_bucket(
-        self,
-        fraction: float,
-        reset_countdown: str,
-        status_text: Optional[str] = None,
-        timer_started: Optional[bool] = None,
-    ) -> None:
-        try:
-            val = float(fraction)
-        except (TypeError, ValueError):
-            val = math.nan
-        default_win = str(getattr(self, "_default_window", "") or "")
-        if not math.isfinite(val):
-            self._fraction = 0.0
-            self._timer_started = False
-            sub_txt = status_text if status_text else describe_quota_timer(default_win, "", val, "", reset_countdown)[1]
-            self.lbl_pct.configure(text="--.---%", fg=FG_MUTED)
-            self.lbl_sub.configure(text=sub_txt, fg=FG_MUTED)
-            self._redraw()
-            return
-        self._fraction = max(0.0, min(1.0, val))
-        auto_started, auto_status = describe_quota_timer(default_win, "", self._fraction, "", reset_countdown)
-        self._timer_started = auto_started if timer_started is None else bool(timer_started)
-        sub_txt = status_text if status_text else auto_status
-        pct = self._fraction * 100.0
-        fg, _ = _quota_semantic_colors(pct)
-        self.lbl_pct.configure(text=f"{pct:7.3f}%", fg=fg)
-        self.lbl_sub.configure(text=sub_txt, fg=FG_SUB if self._timer_started else FG_MUTED)
-        self._redraw()
-
-    def _redraw(self, *, allow_defer: bool = True) -> None:
-        self.canvas.delete("all")
-        cw = int(self.canvas.winfo_width())
-        ch = int(self.canvas.winfo_height())
-        if cw <= 10:
-            parent_w = int(self.winfo_width())
-            if parent_w > 30:
-                cw = max(10, parent_w - 22)
-            elif allow_defer and not getattr(self, "_deferred_redraw_pending", False):
-                self._deferred_redraw_pending = True
-                self.after_idle(self._redraw_later)
-        w = max(10, cw)
-        h = max(6, ch)
-        self.canvas.create_rectangle(0, 0, w, h, fill=BG_VOID, outline="")
-        fill_w = int(round(w * self._fraction))
-        if fill_w > 0:
-            fg, _ = _quota_semantic_colors(self._fraction * 100.0)
-            self.canvas.create_rectangle(0, 0, fill_w, h, fill=fg, outline="")
-
-    def _redraw_later(self) -> None:
-        self._deferred_redraw_pending = False
-        if self.winfo_exists():
-            self._redraw(allow_defer=False)
-
-
-class AstrolabeDialWidget(tk.Frame):
-    """
-    Orion Astrolabe & Chronograph Dial (猎户座双星轨精密机械计时仪)
-    - Outer Chronograph Bezel (60 precision radial ticks)
-    - Outer Glowing Arc: Primary metric (e.g. 5h Rolling Quota Pool)
-    - Golden Star Needle: Remaining Window Time reference (instant Surplus vs Overburn visual!)
-    - Inner Starlight Ring: Secondary metric (e.g. Weekly Quota Ceiling Pool)
-    - Center Precision Digital Readout + Bottom Pace Verdict Pill
-    """
-
-    def __init__(
-        self,
-        parent: tk.Widget,
-        title: str,
-        subtitle_tag: str = "ORION CHRONOGRAPH",
-        primary_hue: str = "cyan",
-        dial_px: int = 188,
-        simplified_digits: bool = False,
-        dpi_scale: float = 1.0,
-    ) -> None:
-        super().__init__(
-            parent,
-            bg=BG_CARD,
-            highlightthickness=1,
-            highlightbackground=BORDER_SUBTLE,
-            padx=int(round(14 * dpi_scale)),
-            pady=int(round(10 * dpi_scale)),
-        )
-        self._title = title
-        self._subtitle_tag = subtitle_tag
-        self._primary_hue = primary_hue
-        self._simplified = simplified_digits
-        self._dpi = dpi_scale
-
-        # Dial state
-        self._primary_frac: float = math.nan
-        self._secondary_frac: float = math.nan
-        self._time_rem_frac: Optional[float] = None
-        self._center_top: str = subtitle_tag
-        self._center_main: str = "--.-%" if simplified_digits else "--.---%"
-        self._center_sub: str = "等待本地采样"
-        self._footer_left: str = "重置倒计时: --"
-        self._footer_right: str = "✦ 待机探活中"
-        self._footer_right_fg: str = FG_MUTED
-        self._custom_color: Optional[Tuple[str, str]] = None
-
-        # Top header bar inside card (pack right badge first so narrow widths never clip status pill!)
-        hdr = tk.Frame(self, bg=BG_CARD)
-        hdr.pack(fill=tk.X, pady=(0, 2))
-        self.lbl_badge = tk.Label(
-            hdr,
-            text=self._footer_right,
-            bg=BG_CARD_ALT,
-            fg=FG_MUTED,
-            padx=8,
-            pady=2,
-            font=("Microsoft YaHei UI", 8, "bold"),
-        )
-        self.lbl_badge.pack(side=tk.RIGHT, padx=(6, 0))
-        self.lbl_title = tk.Label(
-            hdr,
-            text=title,
-            bg=BG_CARD,
-            fg=FG_TEXT,
-            font=("Microsoft YaHei UI", 10 if not simplified_digits else 11, "bold"),
-            anchor="w",
-        )
-        self.lbl_title.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        self.canvas = tk.Canvas(
-            self,
-            width=dial_px,
-            height=dial_px,
-            bg=BG_CARD,
-            highlightthickness=0,
-        )
-        self.canvas.pack(fill=tk.BOTH, expand=True, pady=2)
-
-        ftr = tk.Frame(self, bg=BG_CARD)
-        ftr.pack(fill=tk.X, pady=(2, 0))
-        self.lbl_weekly_meta = tk.Label(
-            ftr,
-            text="",
-            bg=BG_CARD,
-            fg=FG_DIM,
-            font=("Consolas", 8),
-        )
-        self.lbl_weekly_meta.pack(side=tk.RIGHT, padx=(6, 0))
-        self.lbl_reset = tk.Label(
-            ftr,
-            text=self._footer_left,
-            bg=BG_CARD,
-            fg=FG_MUTED,
-            font=("Microsoft YaHei UI", 9 if simplified_digits else 8),
-            anchor="w",
-        )
-        self.lbl_reset.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        self._deferred_redraw_pending = False
-        self.canvas.bind("<Configure>", lambda _e: self._redraw(allow_defer=False))
-        self.bind(
-            "<Configure>",
-            lambda _e: self._redraw(allow_defer=False) if int(self.canvas.winfo_width()) <= 10 else None,
-        )
-
-    def set_quota_pair(
-        self,
-        frac_5h: float,
-        reset_5h_countdown: str,
-        reset_5h_iso: str,
-        frac_weekly: float,
-        reset_weekly_countdown: str,
-        offline_reason: str = "等待采样",
-    ) -> None:
-        self._custom_color = None
-        f5_ok = isinstance(frac_5h, (int, float)) and math.isfinite(frac_5h)
-        fw_ok = isinstance(frac_weekly, (int, float)) and math.isfinite(frac_weekly)
-
-        if not f5_ok and not fw_ok:
-            self._primary_frac = math.nan
-            self._secondary_frac = math.nan
-            self._time_rem_frac = None
-            self._center_top = self._subtitle_tag
-            self._center_main = "--.-%" if self._simplified else "--.---%"
-            self._center_sub = offline_reason
-            self.lbl_reset.configure(text=f"状态: {offline_reason}", fg=FG_MUTED)
-            self.lbl_weekly_meta.configure(text="")
-            self.lbl_badge.configure(text="⚪ 未就绪", fg=FG_MUTED, bg=BG_CARD_ALT)
-            self.configure(highlightbackground=BORDER_SUBTLE)
-            self._redraw()
-            return
-
-        p_frac = max(0.0, min(1.0, float(frac_5h))) if f5_ok else max(0.0, min(1.0, float(frac_weekly)))
-        s_frac = max(0.0, min(1.0, float(frac_weekly))) if (f5_ok and fw_ok) else math.nan
-        self._primary_frac = p_frac
-        self._secondary_frac = s_frac
-        p_untouched_5h = bool(f5_ok and p_frac >= 0.999999)
-        self._time_rem_frac = (
-            _compute_remaining_window_fraction(reset_5h_iso, 18000.0)
-            if (f5_ok and not p_untouched_5h)
-            else None
-        )
-
-        pct5 = p_frac * 100.0
-        fg_main, _ = _quota_semantic_colors(pct5, self._primary_hue)
-        self._center_top = "5H 滚动池剩余" if f5_ok else "周额度池剩余"
-        self._center_main = f"{pct5:.1f}%" if self._simplified else f"{pct5:7.3f}%".strip()
-
-        if math.isfinite(s_frac):
-            self._center_sub = (
-                f"周池剩余 {s_frac * 100.0:.1f}%"
-                if self._simplified
-                else f"WEEKLY {s_frac * 100.0:6.2f}%"
-            )
-            wk_untouched = s_frac >= 0.999999
-            wk_lbl = (
-                f"周满额未动 · {reset_weekly_countdown}"
-                if wk_untouched and reset_weekly_countdown not in ("", "--", "未知")
-                else f"周重置: {reset_weekly_countdown}"
-            )
-            self.lbl_weekly_meta.configure(
-                text="" if self._simplified else wk_lbl,
-                fg=FG_MUTED,
-            )
-        else:
-            self._center_sub = "单通道直读"
-            self.lbl_weekly_meta.configure(text="")
-
-        cd_txt = reset_5h_countdown if f5_ok else reset_weekly_countdown
-        if p_untouched_5h:
-            self.lbl_reset.configure(
-                text="满额待命 · 首条请求触发 5h 计时" if self._simplified else "5h 池: 满额待命 · 未开始计时",
-                fg=FG_SUB if self._simplified else FG_MUTED,
-            )
-            badge_txt = "✦ 满额待命"
-            badge_fg, badge_bg = ACCENT_CYAN, ACCENT_CYAN_DIM
-        else:
-            self.lbl_reset.configure(
-                text=f"距离满血重置: {cd_txt}" if self._simplified else f"5h 重置: {cd_txt}",
-                fg=FG_SUB if self._simplified else FG_MUTED,
-            )
-            # Pace vs Time-Elapsed verdict
-            if self._time_rem_frac is not None:
-                delta_pct = (p_frac - self._time_rem_frac) * 100.0
-                if delta_pct >= 4.0:
-                    badge_txt = "🟢 额度充裕" if self._simplified else f"✦ 盈余巡航 +{delta_pct:.1f}%"
-                    badge_fg, badge_bg = ACCENT_GREEN, ACCENT_GREEN_DIM
-                elif delta_pct >= -5.0:
-                    badge_txt = "🔵 匀速消耗" if self._simplified else f"◎ 均衡配速 {delta_pct:+.1f}%"
-                    badge_fg, badge_bg = ACCENT_CYAN, ACCENT_CYAN_DIM
-                else:
-                    badge_txt = "🟠 消耗偏快" if self._simplified else f"⚡ 超速透支 {delta_pct:+.1f}%"
-                    badge_fg, badge_bg = ACCENT_ROSE, ACCENT_CRIMSON_DIM
-            else:
-                if pct5 >= 50.0:
-                    badge_txt, badge_fg, badge_bg = ("🟢 水位健康", ACCENT_GREEN, ACCENT_GREEN_DIM)
-                elif pct5 >= 20.0:
-                    badge_txt, badge_fg, badge_bg = ("🟡 注意余量", ACCENT_AMBER, ACCENT_AMBER_DIM)
-                else:
-                    badge_txt, badge_fg, badge_bg = ("🔴 濒临见底", ACCENT_ROSE, ACCENT_CRIMSON_DIM)
-
-        self.lbl_badge.configure(text=badge_txt, fg=badge_fg, bg=badge_bg)
-        self.configure(highlightbackground=BORDER_CRIMSON if pct5 < 25.0 else BORDER_SUBTLE)
-        _ = fg_main
-        self._redraw()
-
-    def set_custom_metric(
-        self,
-        ring_fraction: float,
-        top_caption: str,
-        big_value: str,
-        sub_caption: str,
-        badge_text: str,
-        badge_fg: str,
-        badge_bg: str,
-        footer_text: str,
-        ring_colors: Tuple[str, str],
-    ) -> None:
-        """Drive the Astrolabe dial for non-percentage hero metrics (Today's Spend or Risk Latency)."""
-        self._primary_frac = max(0.0, min(1.0, ring_fraction)) if math.isfinite(ring_fraction) else math.nan
-        self._secondary_frac = math.nan
-        self._time_rem_frac = None
-        self._custom_color = ring_colors
-        self._center_top = top_caption
-        self._center_main = big_value
-        self._center_sub = sub_caption
-        self.lbl_badge.configure(text=badge_text, fg=badge_fg, bg=badge_bg)
-        self.lbl_reset.configure(text=footer_text, fg=FG_SUB)
-        self.lbl_weekly_meta.configure(text="")
-        self._redraw()
-
-    def _redraw(self, *, allow_defer: bool = True) -> None:
-        c = self.canvas
-        c.delete("all")
-        cw = int(c.winfo_width())
-        ch = int(c.winfo_height())
-        if cw <= 10:
-            pw = int(self.winfo_width())
-            if pw > 90:
-                cw = max(80, pw - 28)
-            elif allow_defer and not getattr(self, "_deferred_redraw_pending", False):
-                self._deferred_redraw_pending = True
-                self.after_idle(self._redraw_later)
-        w = max(80, cw)
-        h = max(80, ch)
-        cx, cy = w * 0.5, h * 0.5
-        radius = min(w, h) * 0.43
-        if radius < 36:
-            return
-
-        # 1. Background Orion Orbital Ellipses (echoing assets/logo.svg)
-        orb1 = _rotated_ellipse_points(cx, cy, radius * 1.07, radius * 0.44, -26.0, steps=44)
-        orb2 = _rotated_ellipse_points(cx, cy, radius * 1.07, radius * 0.44, 30.0, steps=44)
-        c.create_line(*orb1, fill="#241326", width=1, dash=(4, 5))
-        c.create_line(*orb2, fill="#122136", width=1, dash=(3, 6))
-
-        # Inner dark astrolabe well
-        r_well = radius * 0.96
-        c.create_oval(
-            cx - r_well,
-            cy - r_well,
-            cx + r_well,
-            cy + r_well,
-            fill=BG_DIAL_WELL,
-            outline="#221933",
-            width=1,
-        )
-
-        # 2. 60-Tick Chronograph Watch Bezel
-        r_tick_outer = radius * 0.95
-        p_ok = math.isfinite(self._primary_frac)
-        active_color, halo_color = (
-            self._custom_color
-            if self._custom_color is not None
-            else _quota_semantic_colors(self._primary_frac * 100.0 if p_ok else math.nan, self._primary_hue)
-        )
-
-        for i in range(60):
-            frac_i = i / 60.0
-            ang = -math.pi * 0.5 + 2.0 * math.pi * frac_i
-            ca, sa = math.cos(ang), math.sin(ang)
-            major = (i % 5) == 0
-            r_in = radius * (0.875 if major else 0.91)
-            lit = p_ok and frac_i <= self._primary_frac
-            if lit:
-                t_col = active_color if major else "#475569"
-            else:
-                t_col = "#362a4d" if major else "#1e172b"
-            c.create_line(
-                cx + r_in * ca,
-                cy + r_in * sa,
-                cx + r_tick_outer * ca,
-                cy + r_tick_outer * sa,
-                fill=t_col,
-                width=1.6 if major else 1.0,
-            )
-
-        # 3. Outer Primary Ring (5h Quota Pool / Hero Metric)
-        r_outer = radius * 0.80
-        ring_w = max(6, int(round(radius * 0.10)))
-        c.create_oval(
-            cx - r_outer,
-            cy - r_outer,
-            cx + r_outer,
-            cy + r_outer,
-            outline="#1c152b",
-            width=ring_w,
-        )
-
-        if p_ok and self._primary_frac > 0.0005:
-            ext = -min(359.85, self._primary_frac * 360.0)
-            # Soft outer glow halo
-            c.create_arc(
-                cx - r_outer,
-                cy - r_outer,
-                cx + r_outer,
-                cy + r_outer,
-                start=90.0,
-                extent=ext,
-                style=tk.ARC,
-                outline=halo_color,
-                width=ring_w + max(4, int(round(4 * self._dpi))),
-            )
-            # Crisp core arc
-            c.create_arc(
-                cx - r_outer,
-                cy - r_outer,
-                cx + r_outer,
-                cy + r_outer,
-                start=90.0,
-                extent=ext,
-                style=tk.ARC,
-                outline=active_color,
-                width=ring_w,
-            )
-            # Leading starlight bead
-            tip_ang = -math.pi * 0.5 + 2.0 * math.pi * self._primary_frac
-            tx = cx + r_outer * math.cos(tip_ang)
-            ty = cy + r_outer * math.sin(tip_ang)
-            br = max(3.5, ring_w * 0.58)
-            c.create_oval(tx - br - 2, ty - br - 2, tx + br + 2, ty + br + 2, fill=active_color, outline="")
-            c.create_oval(tx - br * 0.55, ty - br * 0.55, tx + br * 0.55, ty + br * 0.55, fill="#ffffff", outline="")
-
-        # 4. Golden Time-Elapsed Reference Star Marker on Bezel
-        if self._time_rem_frac is not None and math.isfinite(self._time_rem_frac):
-            t_ang = -math.pi * 0.5 + 2.0 * math.pi * self._time_rem_frac
-            ca, sa = math.cos(t_ang), math.sin(t_ang)
-            # Radial hairline across outer ring
-            c.create_line(
-                cx + (r_outer - ring_w * 0.8) * ca,
-                cy + (r_outer - ring_w * 0.8) * sa,
-                cx + (radius * 0.96) * ca,
-                cy + (radius * 0.96) * sa,
-                fill=ACCENT_GOLD,
-                width=1.8,
-            )
-            # Diamond star marker at bezel rim
-            mx = cx + (radius * 0.97) * ca
-            my = cy + (radius * 0.97) * sa
-            ms = max(3.5, 4.0 * self._dpi)
-            c.create_polygon(
-                mx, my - ms, mx + ms, my, mx, my + ms, mx - ms, my,
-                fill=ACCENT_GOLD,
-                outline="#713f12",
-            )
-
-        # 5. Inner Concentric Ring (Weekly Ceiling Pool)
-        r_inner = radius * 0.655
-        inner_w = max(3, int(round(radius * 0.055)))
-        if math.isfinite(self._secondary_frac):
-            c.create_oval(
-                cx - r_inner,
-                cy - r_inner,
-                cx + r_inner,
-                cy + r_inner,
-                outline="#181226",
-                width=inner_w,
-            )
-            if self._secondary_frac > 0.0005:
-                ext_in = -min(359.85, self._secondary_frac * 360.0)
-                in_col = ACCENT_VIOLET if self._secondary_frac >= 0.25 else ACCENT_ROSE
-                c.create_arc(
-                    cx - r_inner,
-                    cy - r_inner,
-                    cx + r_inner,
-                    cy + r_inner,
-                    start=90.0,
-                    extent=ext_in,
-                    style=tk.ARC,
-                    outline=in_col,
-                    width=inner_w,
-                )
-        else:
-            # Subtle decorative inner crosshair reticle
-            c.create_oval(
-                cx - r_inner,
-                cy - r_inner,
-                cx + r_inner,
-                cy + r_inner,
-                outline="#1d162c",
-                width=1,
-                dash=(2, 4),
-            )
-
-        # 6. Center Chronograph Typography (generous High-DPI inner clearance)
-        top_fs = max(7, int(round(radius * 0.098 / self._dpi)))
-        main_fs = max(12, int(round(radius * (0.235 if self._simplified else 0.19) / self._dpi)))
-        sub_fs = max(7, int(round(radius * 0.095 / self._dpi)))
-
-        c.create_text(
-            cx,
-            cy - radius * 0.23,
-            text=self._center_top,
-            fill=FG_MUTED,
-            font=("Microsoft YaHei UI", top_fs),
-        )
-        c.create_text(
-            cx,
-            cy + radius * 0.005,
-            text=self._center_main,
-            fill=active_color if p_ok else FG_MUTED,
-            font=("Consolas", main_fs, "bold"),
-        )
-        c.create_text(
-            cx,
-            cy + radius * 0.235,
-            text=self._center_sub,
-            fill=FG_SUB if self._simplified else ACCENT_VIOLET,
-            font=("Consolas" if not self._simplified else "Microsoft YaHei UI", sub_fs),
-        )
-
-    def _redraw_later(self) -> None:
-        self._deferred_redraw_pending = False
-        if self.winfo_exists():
-            self._redraw(allow_defer=False)
-
-
-class OrionChartWidget(tk.Frame):
-    """
-    Adaptive Vector Statistical Chart (高颜值矢量统计图画布)
-    - Supports `area` trajectory curves (24h Quota Watermark / Sidecar Latency Waveform)
-      and `bar` column charts (14-Day Daily Spend / Token Trend)
-    - Built-in mouse hover crosshair & exact value inspection pill
-    """
-
-    def __init__(
-        self,
-        parent: tk.Widget,
-        title: str = "实时统计趋势",
-        height_px: int = 180,
-        dpi_scale: float = 1.0,
-    ) -> None:
-        super().__init__(
-            parent,
-            bg=BG_CARD,
-            highlightthickness=1,
-            highlightbackground=BORDER_SUBTLE,
-            padx=int(round(14 * dpi_scale)),
-            pady=int(round(10 * dpi_scale)),
-        )
-        self._dpi = dpi_scale
-        self._mode: str = "area"
-        self._points: List[Tuple[str, float]] = []
-        self._secondary_points: List[Tuple[str, float]] = []
-        self._unit_suffix: str = "%"
-        self._unit_prefix: str = ""
-        self._fixed_y_range: Optional[Tuple[float, float]] = (0.0, 100.0)
-        self._line_color: str = ACCENT_CYAN
-        self._fill_color: str = "#10263c"
-        self._empty_hint: str = "等待采样生成趋势曲线..."
-        self._hover_idx: Optional[int] = None
-
-        hdr = tk.Frame(self, bg=BG_CARD)
-        hdr.pack(fill=tk.X, pady=(0, 4))
-        # Pack right hover/summary pill first so long titles never squeeze it off-screen
-        self.lbl_hover = tk.Label(
-            hdr,
-            text="",
-            bg=BG_CARD_ALT,
-            fg=ACCENT_GOLD,
-            padx=8,
-            pady=1,
-            font=("Consolas", 9, "bold"),
-        )
-        self.lbl_hover.pack(side=tk.RIGHT, padx=(6, 0))
-        self.lbl_title = tk.Label(
-            hdr, text=title, bg=BG_CARD, fg=FG_TEXT, font=("Microsoft YaHei UI", 10, "bold"), anchor="w"
-        )
-        self.lbl_title.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        self.canvas = tk.Canvas(self, height=height_px, bg=BG_DIAL_WELL, highlightthickness=0)
-        self.canvas.pack(fill=tk.BOTH, expand=True)
-        self._deferred_redraw_pending = False
-        self.canvas.bind("<Configure>", lambda _e: self._redraw(allow_defer=False))
-        self.bind(
-            "<Configure>",
-            lambda _e: self._redraw(allow_defer=False) if int(self.canvas.winfo_width()) <= 10 else None,
-        )
-        self.canvas.bind("<Motion>", self._on_mouse_move)
-        self.canvas.bind("<Leave>", self._on_mouse_leave)
-        self._plot_xs: List[float] = []
-
-    def set_series(
-        self,
-        title: str,
-        points: Sequence[Tuple[str, float]],
-        mode: str = "area",
-        line_color: str = ACCENT_CYAN,
-        fill_color: str = "#10263c",
-        unit_prefix: str = "",
-        unit_suffix: str = "%",
-        fixed_y_range: Optional[Tuple[float, float]] = None,
-        empty_hint: str = "暂无历史采样点",
-        summary_badge: str = "",
-    ) -> None:
-        self.lbl_title.configure(text=title)
-        clean: List[Tuple[str, float]] = []
-        for lbl, val in points:
-            try:
-                fv = float(val)
-            except (TypeError, ValueError):
-                continue
-            if math.isfinite(fv):
-                clean.append((str(lbl), fv))
-        self._points = clean
-        self._mode = mode
-        self._line_color = line_color
-        self._fill_color = fill_color
-        self._unit_prefix = unit_prefix
-        self._unit_suffix = unit_suffix
-        self._fixed_y_range = fixed_y_range
-        self._empty_hint = empty_hint
-        self._default_badge = summary_badge
-        if self._hover_idx is None or self._hover_idx >= len(self._points):
-            self._hover_idx = None
-            self.lbl_hover.configure(text=summary_badge, fg=FG_SUB if summary_badge else FG_MUTED)
-        self._redraw()
-
-    def _format_val(self, v: float) -> str:
-        if self._unit_prefix == "$":
-            return f"${v:.2f}"
-        if self._unit_suffix == " ms":
-            return f"{v:.0f} ms"
-        return f"{self._unit_prefix}{v:.2f}{self._unit_suffix}"
-
-    def _on_mouse_move(self, event: tk.Event) -> None:  # type: ignore[type-arg]
-        if not self._plot_xs or not self._points:
-            return
-        mx = float(event.x)
-        best_i = min(range(len(self._plot_xs)), key=lambda i: abs(self._plot_xs[i] - mx))
-        if best_i != self._hover_idx:
-            self._hover_idx = best_i
-            lbl, val = self._points[best_i]
-            self.lbl_hover.configure(text=f"✦ {lbl}  ·  {self._format_val(val)}", fg=ACCENT_GOLD)
-            self._redraw()
-
-    def _on_mouse_leave(self, _event: tk.Event) -> None:  # type: ignore[type-arg]
-        if self._hover_idx is not None:
-            self._hover_idx = None
-            badge = getattr(self, "_default_badge", "")
-            self.lbl_hover.configure(text=badge, fg=FG_SUB if badge else FG_MUTED)
-            self._redraw()
-
-    def _redraw(self, *, allow_defer: bool = True) -> None:
-        c = self.canvas
-        c.delete("all")
-        self._plot_xs = []
-        cw = int(c.winfo_width())
-        ch = int(c.winfo_height())
-        if cw <= 10:
-            parent_w = int(self.winfo_width())
-            if parent_w > 140:
-                cw = max(120, parent_w - 28)
-            elif allow_defer and not getattr(self, "_deferred_redraw_pending", False):
-                self._deferred_redraw_pending = True
-                self.after_idle(self._redraw_later)
-        w = max(120, cw)
-        h = max(90, ch)
-
-        pad_l = int(round(48 * self._dpi))
-        pad_r = int(round(18 * self._dpi))
-        pad_t = int(round(16 * self._dpi))
-        pad_b = int(round(26 * self._dpi))
-        pw = max(40, w - pad_l - pad_r)
-        ph = max(40, h - pad_t - pad_b)
-
-        # Subtle border around plot frame
-        c.create_rectangle(pad_l, pad_t, pad_l + pw, pad_t + ph, outline="#1e1730", width=1)
-
-        if not self._points:
-            c.create_text(
-                w * 0.5,
-                h * 0.5,
-                text=self._empty_hint,
-                fill=FG_MUTED,
-                font=("Microsoft YaHei UI", 9),
-            )
-            return
-
-        vals = [v for _, v in self._points]
-        if self._fixed_y_range is not None:
-            y_min, y_max = self._fixed_y_range
-        else:
-            lo_v, hi_v = min(vals), max(vals)
-            y_min = 0.0 if lo_v >= 0 else lo_v * 1.1
-            y_max = hi_v * 1.18 if hi_v > 0 else 10.0
-            if y_max - y_min < 1e-6:
-                y_max = y_min + 1.0
-
-        def _y_of(v: float) -> float:
-            clamped = max(y_min, min(y_max, v))
-            ratio = (clamped - y_min) / (y_max - y_min)
-            return pad_t + ph * (1.0 - ratio)
-
-        # Horizontal reference gridlines (4 divisions)
-        for step_i in range(5):
-            frac = step_i / 4.0
-            gy = pad_t + ph * (1.0 - frac)
-            gv = y_min + (y_max - y_min) * frac
-            if 0 < step_i < 4:
-                c.create_line(pad_l, gy, pad_l + pw, gy, fill="#1b1429", dash=(3, 4))
-            if step_i in (0, 2, 4):
-                if self._unit_prefix == "$":
-                    ylbl = f"${gv:.1f}" if y_max < 20 else f"${gv:.0f}"
-                elif self._unit_suffix == " ms":
-                    ylbl = f"{gv:.0f}"
-                else:
-                    ylbl = f"{gv:.0f}%"
-                c.create_text(
-                    pad_l - 6, gy, text=ylbl, anchor="e", fill=FG_DIM, font=("Consolas", 8)
-                )
-
-        n = len(self._points)
-        base_y = pad_t + ph
-
-        if self._mode == "bar":
-            slot_w = pw / float(max(1, n))
-            bar_w = max(6.0, min(slot_w * 0.62, 34.0 * self._dpi))
-            for i, (lbl, val) in enumerate(self._points):
-                cx_i = pad_l + slot_w * (i + 0.5)
-                self._plot_xs.append(cx_i)
-                top_y = _y_of(val)
-                is_hov = i == self._hover_idx
-                b_fill = ACCENT_ROSE if is_hov else self._fill_color
-                b_cap = ACCENT_GOLD if is_hov else self._line_color
-                c.create_rectangle(
-                    cx_i - bar_w * 0.5,
-                    top_y,
-                    cx_i + bar_w * 0.5,
-                    base_y,
-                    fill=b_fill,
-                    outline=b_cap,
-                    width=1,
-                )
-                c.create_line(
-                    cx_i - bar_w * 0.5,
-                    top_y,
-                    cx_i + bar_w * 0.5,
-                    top_y,
-                    fill=b_cap,
-                    width=2.5,
-                )
-        else:
-            if n == 1:
-                # Single live anchor point -> draw clean live horizon line + glowing beacon
-                only_lbl, only_val = self._points[0]
-                py = _y_of(only_val)
-                cx_mid = pad_l + pw * 0.5
-                self._plot_xs.append(cx_mid)
-                c.create_polygon(
-                    pad_l, py, pad_l + pw, py, pad_l + pw, base_y, pad_l, base_y,
-                    fill=self._fill_color, outline="",
-                )
-                c.create_line(pad_l, py, pad_l + pw, py, fill=self._line_color, width=2, dash=(6, 4))
-                c.create_oval(cx_mid - 6, py - 6, cx_mid + 6, py + 6, fill=self._line_color, outline="")
-                c.create_oval(cx_mid - 2.5, py - 2.5, cx_mid + 2.5, py + 2.5, fill="#ffffff", outline="")
-                c.create_text(
-                    cx_mid,
-                    max(pad_t + 12, py - 14),
-                    text=f"当前实时锚点 {self._format_val(only_val)} ({only_lbl}) · 持续运行将自动绘出轨迹",
-                    fill=FG_SUB,
-                    font=("Microsoft YaHei UI", 8),
-                )
-            else:
-                poly_fill: List[float] = [float(pad_l), float(base_y)]
-                line_pts: List[float] = []
-                coords: List[Tuple[float, float]] = []
-                for i, (_lbl, val) in enumerate(self._points):
-                    px = pad_l + (pw * i) / float(n - 1)
-                    py = _y_of(val)
-                    self._plot_xs.append(px)
-                    coords.append((px, py))
-                    poly_fill.extend([px, py])
-                    line_pts.extend([px, py])
-                poly_fill.extend([float(pad_l + pw), float(base_y)])
-                c.create_polygon(*poly_fill, fill=self._fill_color, outline="")
-                c.create_line(*line_pts, fill=self._line_color, width=2.2, capstyle=tk.ROUND, joinstyle=tk.ROUND)
-
-                # Draw subtle nodes (and highlight latest / hovered node)
-                step_dot = max(1, n // 18)
-                for i, (px, py) in enumerate(coords):
-                    if i == self._hover_idx:
-                        c.create_line(px, pad_t, px, base_y, fill=ACCENT_GOLD, dash=(2, 3))
-                        c.create_oval(px - 5, py - 5, px + 5, py + 5, fill=ACCENT_GOLD, outline="#ffffff", width=1)
-                    elif i == n - 1:
-                        c.create_oval(px - 4.5, py - 4.5, px + 4.5, py + 4.5, fill=self._line_color, outline="#ffffff")
-                    elif (i % step_dot) == 0:
-                        c.create_oval(px - 2, py - 2, px + 2, py + 2, fill=self._line_color, outline="")
-
-        # X-axis sparse labels (up to 6 evenly spaced labels)
-        if self._plot_xs:
-            max_lbls = min(6, len(self._points))
-            idxs = (
-                [0]
-                if max_lbls == 1
-                else sorted({int(round(k * (len(self._points) - 1) / (max_lbls - 1))) for k in range(max_lbls)})
-            )
-            for idx in idxs:
-                c.create_text(
-                    self._plot_xs[idx],
-                    base_y + int(round(12 * self._dpi)),
-                    text=self._points[idx][0],
-                    fill=FG_DIM,
-                    font=("Consolas", 8),
-                )
-
-    def _redraw_later(self) -> None:
-        self._deferred_redraw_pending = False
-        if self.winfo_exists():
-            self._redraw(allow_defer=False)
+logger = logging.getLogger("acerola_orion.panel")
 
 
 class AcerolaOrionApp(tk.Tk):
@@ -1576,6 +188,7 @@ class AcerolaOrionApp(tk.Tk):
         self._notified_tier_levels: Dict[str, int] = {}
         self._tier_hud_until_mono: float = 0.0
         self._last_copied_text: str = ""
+        self._header_badge_packed: bool = False
 
         prefs = _load_ui_prefs()
         self._view_mode: str = (
@@ -1623,9 +236,11 @@ class AcerolaOrionApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         _apply_win32_dark_chrome(self)
 
+        self._plugin_host = PanelPluginHost(self)
         self._configure_styles()
         self._build_header()
         self._build_body_containers()
+        self._mount_ui_plugins()
         self._sync_view_mode_widgets()
 
         use_hud = enable_tray if enable_hud is None else bool(enable_hud)
@@ -1664,6 +279,18 @@ class AcerolaOrionApp(tk.Tk):
             self._schedule_auto_refresh()
         if self.auto_refresh_ms > 0:
             self._ensure_radar_loops()
+
+    @property
+    def plugin_host(self) -> PanelPluginHost:
+        return self._plugin_host
+
+    def _mount_ui_plugins(self) -> None:
+        try:
+            get_kernel().register_ui(self._plugin_host)
+        except Exception as exc:
+            logger.warning("Failed to mount UI plugins: %s", exc, exc_info=True)
+        self._refresh_header_badge(self._last_report)
+        self._redraw_radar_bar()
 
     def _px(self, base: int) -> int:
         return int(round(base * self._dpi_scale))
@@ -1717,7 +344,7 @@ class AcerolaOrionApp(tk.Tk):
         self._refresh_active_charts_and_zen()
 
     def select_full_tab(self, tab_key: str) -> None:
-        if tab_key not in ("hub", "ledger", "vault", "diag"):
+        if tab_key not in self._full_tab_frames:
             return
         self._active_full_tab = tab_key
         for k, frame in self._full_tab_frames.items():
@@ -1732,6 +359,9 @@ class AcerolaOrionApp(tk.Tk):
                 fg="#ffffff" if active else FG_MUTED,
             )
         self._recalibrate_visible_canvases()
+        host = self.__dict__.get("_plugin_host")
+        if host is not None:
+            host.notify_tab_selected(tab_key)
 
     def _recalibrate_visible_canvases(self) -> None:
         """Recalibrate visible canvases after tab switch or tray wakeup to heal 1px unmapped renders."""
@@ -1774,7 +404,7 @@ class AcerolaOrionApp(tk.Tk):
         m_always = "● " if cur_hud == "always" else "○ "
         m_off = "● " if cur_hud == "off" else "○ "
         v_mark = "● " if bool(self.__dict__.get("_vault_auto_enabled", True)) else "○ "
-        return [
+        items: List[MenuSpec] = [
             (f"✦ 打开主控台 ({APP_CODENAME})", self.restore_from_tray),
             (mode_lbl, lambda: self._ui_call(self.toggle_view_mode)),
             (
@@ -1790,9 +420,19 @@ class AcerolaOrionApp(tk.Tk):
             ("🔍 立即采样配额水位快照", lambda: self._run_action("托盘 · 采样配额水位快照", self._sample_watermark_now)),
             ("🛡️ 启用并注册开机自启守卫", lambda: self._run_action("托盘 · 部署断头台内核守卫", install_guard_autostart)),
             ("⏹️ 停用并卸载断头台守卫", lambda: self._run_action("托盘 · 停用断头台内核守卫", uninstall_guard_autostart)),
+        ]
+        host = self.__dict__.get("_plugin_host")
+        if host is not None:
+            plugin_items = host.collect_tray_items()
+            if plugin_items:
+                if items and items[-1] is not None:
+                    items.append(None)
+                items.extend(plugin_items)
+        items.extend([
             None,
             ("✕ 彻底退出主控台", self.exit_app),
-        ]
+        ])
+        return items
 
     def hide_to_tray(self, notify: bool = True) -> None:
         if self.__dict__.get("_closing"):
@@ -1839,6 +479,14 @@ class AcerolaOrionApp(tk.Tk):
     def exit_app(self) -> None:
         self._closing = True
         self._cancel_auto_refresh()
+        defer_id = self.__dict__.get("_radar_defer_id")
+        if defer_id is not None:
+            try:
+                self.after_cancel(defer_id)
+            except Exception:
+                pass
+            self._radar_defer_id = None
+            self._radar_defer_pending = False
         self._hidden_to_tray = False
         hud = self.__dict__.get("_hud_win")
         if hud is not None:
@@ -1911,174 +559,32 @@ class AcerolaOrionApp(tk.Tk):
             pass
 
     def _configure_styles(self) -> None:
-        style = ttk.Style(self)
-        try:
-            style.theme_use("clam")
-        except Exception:
-            pass
-
-        style.configure(
-            "Orion.Treeview",
-            background=BG_CARD,
-            fieldbackground=BG_CARD,
-            foreground=FG_TEXT,
-            rowheight=self._px(28),
-            borderwidth=0,
-            font=("Consolas", 9),
-        )
-        style.configure(
-            "Orion.Treeview.Heading",
-            background=BG_CARD_ALT,
-            foreground=ACCENT_ROSE,
-            font=("Microsoft YaHei UI", 9, "bold"),
-            relief="flat",
-        )
-        style.map("Orion.Treeview", background=[("selected", ACCENT_CRIMSON_DIM)], foreground=[("selected", "#ffffff")])
-
-        style.configure(
-            "Orion.Vertical.TScrollbar",
-            background=BG_CARD_ALT,
-            troughcolor=BG_ROOT,
-            bordercolor=BORDER_SUBTLE,
-            arrowcolor=FG_MUTED,
-            relief="flat",
-        )
-        style.configure(
-            "Orion.Horizontal.TScrollbar",
-            background=BG_CARD_ALT,
-            troughcolor=BG_ROOT,
-            bordercolor=BORDER_SUBTLE,
-            arrowcolor=FG_MUTED,
-            relief="flat",
-        )
+        configure_styles(self)
 
     def _draw_mini_emblem(self, canvas: tk.Canvas) -> None:
-        canvas.delete("all")
-        s = self._px(34)
-        cx, cy = s * 0.5, s * 0.5
-        r = s * 0.44
-        canvas.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#1a0b16", outline=ACCENT_CRIMSON, width=1.5)
-        e1 = _rotated_ellipse_points(cx, cy, r * 0.92, r * 0.38, -28.0, steps=24)
-        e2 = _rotated_ellipse_points(cx, cy, r * 0.92, r * 0.38, 32.0, steps=24)
-        canvas.create_line(*e1, fill=ACCENT_ROSE, width=1.2)
-        canvas.create_line(*e2, fill=ACCENT_CYAN, width=1.0)
-        canvas.create_polygon(
-            cx, cy - r * 0.45, cx + r * 0.22, cy, cx, cy + r * 0.45, cx - r * 0.22, cy,
-            fill=ACCENT_CRIMSON, outline="",
-        )
-        canvas.create_oval(cx - 2, cy - 2, cx + 2, cy + 2, fill=ACCENT_GOLD, outline="")
+        draw_mini_emblem(self, canvas)
 
     def _build_header(self) -> None:
-        hdr = tk.Frame(
-            self,
-            bg=BG_HEADER,
-            padx=self._px(16),
-            pady=self._px(9),
-            highlightthickness=1,
-            highlightbackground=BORDER_CRIMSON,
-        )
-        hdr.pack(fill=tk.X)
+        build_header(self)
 
-        left = tk.Frame(hdr, bg=BG_HEADER)
-        left.pack(side=tk.LEFT)
-
-        em_sz = self._px(34)
-        emblem = tk.Canvas(left, width=em_sz, height=em_sz, bg=BG_HEADER, highlightthickness=0)
-        emblem.pack(side=tk.LEFT, padx=(0, self._px(10)))
-        self._draw_mini_emblem(emblem)
-
-        titles = tk.Frame(left, bg=BG_HEADER)
-        titles.pack(side=tk.LEFT)
-        title_row = tk.Frame(titles, bg=BG_HEADER)
-        title_row.pack(anchor="w")
-        tk.Label(
-            title_row,
-            text=f"{APP_CODENAME}",
-            bg=BG_HEADER,
-            fg=FG_TEXT,
-            font=("Microsoft YaHei UI", 12, "bold"),
-        ).pack(side=tk.LEFT)
-        tk.Label(
-            title_row,
-            text=f"v{APP_VERSION}",
-            bg="#2b1021",
-            fg=ACCENT_ROSE,
-            padx=6,
-            pady=1,
-            font=("Consolas", 8, "bold"),
-        ).pack(side=tk.LEFT, padx=(8, 0))
-
-        self.lbl_header_sub = tk.Label(
-            titles,
-            text=f"{APP_TRINITY}  ·  猎户座星盘配额观测台 & 事件驱动断头台",
-            bg=BG_HEADER,
-            fg=FG_MUTED,
-            font=("Microsoft YaHei UI", 8),
-        )
-        self.lbl_header_sub.pack(anchor="w", pady=(1, 0))
-
-        right = tk.Frame(hdr, bg=BG_HEADER)
-        right.pack(side=tk.RIGHT)
-
-        self.lbl_sync_time = tk.Label(
-            right,
-            text="正在连接 127.0.0.1 回环遥测...",
-            bg=BG_HEADER,
-            fg=FG_MUTED,
-            font=("Consolas", 8),
-        )
-        self.lbl_sync_time.pack(anchor="e", pady=(0, 4))
-
-        btn_row = tk.Frame(right, bg=BG_HEADER)
-        btn_row.pack(anchor="e")
-
-        self.btn_mode_toggle = tk.Button(
-            btn_row,
-            text="◐ 极简视图",
-            command=self.toggle_view_mode,
-            bg="#2b1224",
-            fg=ACCENT_GOLD,
-            activebackground=ACCENT_CRIMSON,
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=11,
-            pady=3,
-            font=("Microsoft YaHei UI", 9, "bold"),
-            cursor="hand2",
-        )
-        self.btn_mode_toggle.pack(side=tk.LEFT, padx=(0, 6))
-
-        self.btn_refresh = tk.Button(
-            btn_row,
-            text="🔃 刷新",
-            command=lambda: self.refresh_all_async(silent=False),
-            bg=BG_CARD_ALT,
-            fg=FG_TEXT,
-            activebackground=ACCENT_CRIMSON,
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=10,
-            pady=3,
-            font=("Microsoft YaHei UI", 9),
-            cursor="hand2",
-        )
-        self.btn_refresh.pack(side=tk.LEFT, padx=(0, 6))
-
-        self.btn_exit_app = tk.Button(
-            btn_row,
-            text="✕ 退出",
-            command=self.exit_app,
-            bg="#22121e",
-            fg=FG_MUTED,
-            activebackground=ACCENT_CRIMSON,
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=9,
-            pady=3,
-            font=("Microsoft YaHei UI", 9),
-            cursor="hand2",
-        )
-        self.btn_exit_app.pack(side=tk.LEFT)
+    def _refresh_header_badge(self, report: Optional[OrionTelemetryReport]) -> None:
+        lbl = self.__dict__.get("lbl_header_badge")
+        host = self.__dict__.get("_plugin_host")
+        if lbl is None or host is None:
+            return
+        badge = host.resolve_header_badge(report)
+        if badge and badge.get("text"):
+            lbl.configure(
+                text=badge["text"],
+                fg=badge.get("fg", ACCENT_CYAN),
+                bg=badge.get("bg", ACCENT_CYAN_DIM),
+            )
+            if not self.__dict__.get("_header_badge_packed", False):
+                lbl.pack(side=tk.LEFT, padx=(8, 0))
+                self._header_badge_packed = True
+        elif self.__dict__.get("_header_badge_packed", False):
+            lbl.pack_forget()
+            self._header_badge_packed = False
 
     def _build_body_containers(self) -> None:
         self.body_wrap = tk.Frame(self, bg=BG_ROOT)
@@ -2112,58 +618,8 @@ class AcerolaOrionApp(tk.Tk):
                 text=f"{APP_TRINITY}  ·  猎户座星盘配额观测台 & 事件驱动断头台"
             )
 
-    # ------------------------------------------------------------------
-    # Mode 1: ZEN / SIMPLIFIED FOCUS MODE (1 Hero Metric + 1 Chart ONLY)
-    # ------------------------------------------------------------------
     def _build_zen_mode_ui(self) -> None:
-        pill_bar = tk.Frame(self.zen_container, bg=BG_ROOT)
-        pill_bar.pack(fill=tk.X, pady=(0, self._px(8)))
-
-        specs = [
-            ("gemini", "✦ Gemini 配额"),
-            ("claude", "◆ Claude / 3P 配额"),
-            ("spend", "◈ 今日等效账单"),
-            ("latency", "⚡ 响应顺畅度"),
-            ("cache", "📡 缓存余温"),
-        ]
-        self._zen_pill_btns: Dict[str, tk.Button] = {}
-        for col, (key, label) in enumerate(specs):
-            pill_bar.columnconfigure(col, weight=1, uniform="zen_pill")
-            b = tk.Button(
-                pill_bar,
-                text=label,
-                command=lambda k=key: self.select_zen_metric(k),
-                relief="flat",
-                padx=10,
-                pady=6,
-                font=("Microsoft YaHei UI", 9, "bold"),
-                cursor="hand2",
-            )
-            b.grid(row=0, column=col, sticky="ew", padx=3)
-            self._zen_pill_btns[key] = b
-
-        self._update_zen_pill_styles()
-
-        # Single Hero Dial (Upper half)
-        self.zen_dial = AstrolabeDialWidget(
-            self.zen_container,
-            title="Gemini 实时可用配额",
-            subtitle_tag="5H 滚动池剩余",
-            primary_hue="cyan",
-            dial_px=self._px(225),
-            simplified_digits=True,
-            dpi_scale=self._dpi_scale,
-        )
-        self.zen_dial.pack(fill=tk.BOTH, expand=True, pady=(0, self._px(8)))
-
-        # Single Statistical Chart (Lower half)
-        self.zen_chart = OrionChartWidget(
-            self.zen_container,
-            title="近 24 小时 Gemini 配额水位变化曲线",
-            height_px=self._px(195),
-            dpi_scale=self._dpi_scale,
-        )
-        self.zen_chart.pack(fill=tk.BOTH, expand=True)
+        build_zen_mode_ui(self)
 
     def _update_zen_pill_styles(self) -> None:
         for k, b in self._zen_pill_btns.items():
@@ -2175,13 +631,10 @@ class AcerolaOrionApp(tk.Tk):
                 activeforeground="#ffffff",
             )
 
-    # ------------------------------------------------------------------
-    # Mode 2: FULL ASTROLABE OBSERVATORY MODE
-    # ------------------------------------------------------------------
     def _build_full_mode_ui(self) -> None:
-        # Custom sleek segmented navigation bar (replaces clunky white-rimmed ttk.Notebook)
         nav_bar = tk.Frame(self.full_container, bg=BG_ROOT)
         nav_bar.pack(fill=tk.X, pady=(0, self._px(8)))
+        self._full_nav_bar = nav_bar
 
         nav_specs = [
             ("hub", "🔭 双星盘总览 (Astrolabe)"),
@@ -2190,7 +643,7 @@ class AcerolaOrionApp(tk.Tk):
             ("diag", "🩺 风控示波与日志 (Diagnostics)"),
         ]
         self._full_nav_buttons: Dict[str, tk.Button] = {}
-        for idx, (key, txt) in enumerate(nav_specs):
+        for key, txt in nav_specs:
             b = tk.Button(
                 nav_bar,
                 text=txt,
@@ -2208,7 +661,7 @@ class AcerolaOrionApp(tk.Tk):
         self.tab_ledger = tk.Frame(self.full_container, bg=BG_ROOT)
         self.tab_vault = tk.Frame(self.full_container, bg=BG_ROOT)
         self.tab_diag = tk.Frame(self.full_container, bg=BG_ROOT)
-        self._full_tab_frames = {
+        self._full_tab_frames: Dict[str, tk.Frame] = {
             "hub": self.tab_hub,
             "ledger": self.tab_ledger,
             "vault": self.tab_vault,
@@ -2221,36 +674,9 @@ class AcerolaOrionApp(tk.Tk):
         self._build_diag_tab()
         self.select_full_tab("hub")
 
+    # Built-in component & tab builder delegates (preserved for subclass/test compatibility)
     def _make_instrument_plate(self, parent: tk.Widget, heading: str) -> Tuple[tk.Frame, tk.Label, tk.Label]:
-        card = tk.Frame(
-            parent,
-            bg=BG_CARD,
-            highlightthickness=1,
-            highlightbackground=BORDER_SUBTLE,
-            padx=self._px(12),
-            pady=self._px(8),
-        )
-        tk.Label(card, text=heading, bg=BG_CARD, fg=FG_MUTED, font=("Microsoft YaHei UI", 8, "bold")).pack(anchor="w")
-        main_lbl = tk.Label(
-            card, text="--", bg=BG_CARD, fg=FG_TEXT, font=("Microsoft YaHei UI", 11, "bold"), pady=2
-        )
-        main_lbl.pack(anchor="w")
-        sub_lbl = tk.Label(
-            card,
-            text="--",
-            bg=BG_CARD,
-            fg=FG_MUTED,
-            font=("Consolas", 8),
-            wraplength=self._px(300),
-            anchor="w",
-            justify="left",
-        )
-        sub_lbl.pack(anchor="w", fill=tk.X)
-        card.bind(
-            "<Configure>",
-            lambda e, lbl=sub_lbl: lbl.configure(wraplength=max(160, int(e.width) - 24)),
-        )
-        return card, main_lbl, sub_lbl
+        return make_instrument_plate(self, parent, heading)
 
     def _create_dark_text_box(
         self,
@@ -2260,25 +686,38 @@ class AcerolaOrionApp(tk.Tk):
         height: int = 6,
         pad_xy: Tuple[int, int] = (6, 6),
     ) -> tk.Text:
-        wrap = tk.Frame(parent, bg=BG_VOID)
-        wrap.pack(fill=tk.BOTH, expand=True, padx=pad_xy[0], pady=(0, pad_xy[1]))
-        txt = tk.Text(
-            wrap,
-            bg=BG_VOID,
-            fg=fg_color,
-            insertbackground="#ffffff",
-            font=("Consolas", font_pt),
-            relief="flat",
-            height=height,
-            wrap=tk.WORD,
-            borderwidth=0,
-            highlightthickness=0,
-        )
-        vsb = ttk.Scrollbar(wrap, orient="vertical", command=txt.yview, style="Orion.Vertical.TScrollbar")
-        txt.configure(yscrollcommand=vsb.set)
-        vsb.pack(side=tk.RIGHT, fill=tk.Y)
-        txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        return txt
+        return create_dark_text_box(parent, fg_color=fg_color, font_pt=font_pt, height=height, pad_xy=pad_xy)
+
+    def _create_scrolled_treeview(
+        self,
+        parent: tk.Widget,
+        columns: Sequence[str],
+        headers: Sequence[Tuple[str, str, int, str]],
+        height: int,
+        expand: bool = False,
+    ) -> ttk.Treeview:
+        return create_scrolled_treeview(self, parent, columns, headers, height, expand=expand)
+
+    def _build_hub_tab(self) -> None:
+        build_hub_tab(self)
+
+    def _build_ledger_tab(self) -> None:
+        build_ledger_tab(self)
+
+    def _build_vault_tab(self) -> None:
+        build_vault_tab(self)
+
+    def _build_diag_tab(self) -> None:
+        build_diag_tab(self)
+
+    def _build_quota_points(self, col_key: str, live_bucket: Any) -> List[Tuple[str, float]]:
+        return build_quota_points(self, col_key, live_bucket)
+
+    def _build_daily_spend_points(self) -> List[Tuple[str, float]]:
+        return build_daily_spend_points(self)
+
+    def _refresh_active_charts_and_zen(self) -> None:
+        refresh_active_charts_and_zen(self)
 
     def _sample_watermark_now(self) -> Dict[str, Any]:
         rep = collect_telemetry(include_guard_check=False)
@@ -2292,604 +731,6 @@ class AcerolaOrionApp(tk.Tk):
                 else "当前未获取到在线配额桶（客户端可能离线或未登录）"
             ),
         }
-
-    def _build_hub_tab(self) -> None:
-        # Row 1: Dual Orion Astrolabe Chronographs (Gemini & Claude/3P)
-        dials_row = tk.Frame(self.tab_hub, bg=BG_ROOT)
-        dials_row.pack(fill=tk.X, pady=(0, self._px(8)))
-        dials_row.columnconfigure(0, weight=1, uniform="orion_dial")
-        dials_row.columnconfigure(1, weight=1, uniform="orion_dial")
-
-        self.dial_gemini = AstrolabeDialWidget(
-            dials_row,
-            title="✦ Gemini 星盘计时仪 (5h 外轨 · 周池内轨 · 金针时间基准)",
-            subtitle_tag="GEMINI ASTROLABE",
-            primary_hue="cyan",
-            dial_px=self._px(208),
-            simplified_digits=False,
-            dpi_scale=self._dpi_scale,
-        )
-        self.dial_gemini.grid(row=0, column=0, sticky="nsew", padx=(0, self._px(5)))
-
-        self.dial_claude = AstrolabeDialWidget(
-            dials_row,
-            title="◆ Claude / GPT 星盘计时仪 (3p-5h 外轨 · 3p-weekly 内轨)",
-            subtitle_tag="CLAUDE / 3P ASTROLABE",
-            primary_hue="rose",
-            dial_px=self._px(208),
-            simplified_digits=False,
-            dpi_scale=self._dpi_scale,
-        )
-        self.dial_claude.grid(row=0, column=1, sticky="nsew", padx=(self._px(5), 0))
-
-        # Row 1.5: Passive Prompt KV Cache 250s TTL Radar Bar (100% local read-only observability)
-        self.radar_card = tk.Frame(
-            self.tab_hub,
-            bg=BG_CARD,
-            highlightthickness=1,
-            highlightbackground=BORDER_SUBTLE,
-            padx=self._px(12),
-            pady=self._px(6),
-        )
-        self.radar_card.pack(fill=tk.X, pady=(0, self._px(8)))
-
-        r_top = tk.Frame(self.radar_card, bg=BG_CARD)
-        r_top.pack(fill=tk.X)
-
-        r_ctrl = tk.Frame(r_top, bg=BG_CARD)
-        r_ctrl.pack(side=tk.RIGHT)
-
-        self.btn_target_switch = tk.Button(
-            r_ctrl,
-            text="🧠 守大窗 ▾",
-            command=self._popup_target_menu,
-            bg=ACCENT_CYAN_DIM,
-            fg=ACCENT_CYAN,
-            activebackground=ACCENT_CRIMSON,
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=8,
-            pady=1,
-            font=("Microsoft YaHei UI", 8, "bold"),
-            cursor="hand2",
-        )
-        self.btn_target_switch.pack(side=tk.LEFT, padx=(0, 6))
-
-        tk.Label(r_ctrl, text="悬浮胶囊:", bg=BG_CARD, fg=FG_DIM, font=("Microsoft YaHei UI", 8)).pack(
-            side=tk.LEFT, padx=(0, 3)
-        )
-        self._hud_mode_buttons: Dict[str, tk.Button] = {}
-        for hm_key, hm_lbl in (("smart", "智能预警"), ("always", "常驻"), ("off", "关闭")):
-            hb = tk.Button(
-                r_ctrl,
-                text=hm_lbl,
-                command=lambda k=hm_key: self.set_hud_mode(k),
-                relief="flat",
-                padx=7,
-                pady=1,
-                font=("Microsoft YaHei UI", 8, "bold"),
-                cursor="hand2",
-            )
-            hb.pack(side=tk.LEFT, padx=1)
-            self._hud_mode_buttons[hm_key] = hb
-
-        r_left = tk.Frame(r_top, bg=BG_CARD)
-        r_left.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        tk.Label(
-            r_left,
-            text="📡 KV 缓存雷达",
-            bg=BG_CARD_ALT,
-            fg=ACCENT_ROSE,
-            padx=6,
-            pady=1,
-            font=("Microsoft YaHei UI", 8, "bold"),
-        ).pack(side=tk.LEFT, padx=(0, 8))
-        self.lbl_radar_main = tk.Label(
-            r_left,
-            text="⚪ 暂无活跃会话上下文",
-            bg=BG_CARD,
-            fg=FG_MUTED,
-            font=("Microsoft YaHei UI", 9, "bold"),
-            anchor="w",
-        )
-        self.lbl_radar_main.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        self.lbl_radar_tier_badge = tk.Label(
-            r_left,
-            text="",
-            bg="#4c0519",
-            fg="#fda4af",
-            font=("Microsoft YaHei UI", 8, "bold"),
-            padx=8,
-            pady=1,
-        )
-
-        self.radar_canvas = tk.Canvas(
-            self.radar_card,
-            height=max(4, self._px(5)),
-            bg=BG_VOID,
-            highlightthickness=0,
-        )
-        self.radar_canvas.pack(fill=tk.X, pady=(4, 3))
-        self.radar_canvas.bind("<Configure>", lambda _e: self._redraw_radar_bar(allow_defer=False))
-
-        self.lbl_radar_sub = tk.Label(
-            self.radar_card,
-            text="等待 Antigravity 活跃对话采样（纯本地无锁尾读 · 零额外发包）...",
-            bg=BG_CARD,
-            fg=FG_MUTED,
-            font=("Consolas", 8),
-            anchor="w",
-            justify="left",
-        )
-        self.lbl_radar_sub.pack(anchor="w", fill=tk.X)
-
-        self.radar_tier_bar = tk.Frame(
-            self.radar_card,
-            bg="#2a0a18",
-            highlightthickness=1,
-            highlightbackground=ACCENT_CRIMSON,
-            padx=8,
-            pady=3,
-        )
-        self.btn_copy_compact = tk.Button(
-            self.radar_tier_bar,
-            text=f"✂️ 复制 {COMPACT_COMMAND_TEXT}",
-            command=self.copy_compact_command,
-            bg=ACCENT_CRIMSON,
-            fg="#ffffff",
-            activebackground=ACCENT_ROSE,
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=8,
-            pady=1,
-            font=("Microsoft YaHei UI", 8, "bold"),
-            cursor="hand2",
-        )
-        self.btn_copy_compact.pack(side=tk.RIGHT, padx=(8, 0))
-        self.lbl_radar_tier_alert = tk.Label(
-            self.radar_tier_bar,
-            text="",
-            bg="#2a0a18",
-            fg="#fda4af",
-            font=("Microsoft YaHei UI", 8, "bold"),
-            anchor="w",
-            justify="left",
-        )
-        self.lbl_radar_tier_alert.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        self.radar_card.bind("<Configure>", self._on_radar_card_configure)
-        self._refresh_hud_mode_buttons()
-        self._refresh_target_switch_button()
-
-        # Row 2: 3 Sleek Instrument Plates (IPC + Tier/Audit + Guillotine Guard Switchboard)
-        plates_row = tk.Frame(self.tab_hub, bg=BG_ROOT)
-        plates_row.pack(fill=tk.X, pady=(0, self._px(8)))
-        for col in range(3):
-            plates_row.columnconfigure(col, weight=1, uniform="hub_plate")
-
-        p1, self.lbl_ipc_main, self.lbl_ipc_sub = self._make_instrument_plate(
-            plates_row, "🔭 本地语言服务回环拓扑 (127.0.0.1)"
-        )
-        p1.grid(row=0, column=0, sticky="nsew", padx=(0, self._px(5)))
-
-        p2, self.lbl_tier_main, self.lbl_tier_sub = self._make_instrument_plate(
-            plates_row, "⚖️ 订阅层级 · 预设倍率估算与拥堵体征"
-        )
-        p2.grid(row=0, column=1, sticky="nsew", padx=self._px(5))
-
-        # Plate 3: Guard Status + Integrated Tactile Controls
-        p3 = tk.Frame(
-            plates_row,
-            bg=BG_CARD,
-            highlightthickness=1,
-            highlightbackground=BORDER_SUBTLE,
-            padx=self._px(12),
-            pady=self._px(8),
-        )
-        p3.grid(row=0, column=2, sticky="nsew", padx=(self._px(5), 0))
-        tk.Label(
-            p3,
-            text="⚔️ Acerola 事件驱动进程断头台守卫",
-            bg=BG_CARD,
-            fg=FG_MUTED,
-            font=("Microsoft YaHei UI", 8, "bold"),
-        ).pack(anchor="w")
-        self.lbl_guard_main = tk.Label(
-            p3, text="--", bg=BG_CARD, fg=FG_TEXT, font=("Microsoft YaHei UI", 11, "bold"), pady=2
-        )
-        self.lbl_guard_main.pack(anchor="w")
-        self.lbl_guard_sub = tk.Label(
-            p3, text="--", bg=BG_CARD, fg=FG_MUTED, font=("Consolas", 8), anchor="w", justify="left"
-        )
-        self.lbl_guard_sub.pack(anchor="w", fill=tk.X, pady=(0, 4))
-        p3.bind(
-            "<Configure>",
-            lambda e, lbl=self.lbl_guard_sub: lbl.configure(wraplength=max(160, int(e.width) - 24)),
-        )
-
-        act_bar = tk.Frame(p3, bg=BG_CARD)
-        act_bar.pack(fill=tk.X)
-        btn_specs = [
-            ("🛡️ 自启守卫", "#065f46", lambda: self._run_action("部署断头台内核守卫", install_guard_autostart)),
-            ("⏹️ 停用", "#272136", lambda: self._run_action("停用断头台内核守卫", uninstall_guard_autostart)),
-            ("📸 采样快照", ACCENT_CRIMSON, lambda: self._run_action("采样配额水位快照", self._sample_watermark_now)),
-        ]
-        self._action_buttons.clear()
-        for idx, (label, color, cb) in enumerate(btn_specs):
-            act_bar.columnconfigure(idx, weight=1)
-            b = tk.Button(
-                act_bar,
-                text=label,
-                command=cb,
-                bg=color,
-                fg="#ffffff",
-                disabledforeground=FG_MUTED,
-                activebackground=ACCENT_ROSE,
-                activeforeground="#ffffff",
-                relief="flat",
-                padx=6,
-                pady=3,
-                font=("Microsoft YaHei UI", 8, "bold"),
-                cursor="hand2",
-            )
-            b.grid(row=0, column=idx, sticky="ew", padx=(0 if idx == 0 else 3, 0))
-            self._action_buttons.append(b)
-
-        # Row 3: Live Telemetry Trajectory Chart (left 62%) + Compact Event Console (right 38%)
-        bottom_row = tk.Frame(self.tab_hub, bg=BG_ROOT)
-        bottom_row.pack(fill=tk.BOTH, expand=True)
-        bottom_row.columnconfigure(0, weight=62)
-        bottom_row.columnconfigure(1, weight=38)
-        bottom_row.rowconfigure(0, weight=1)
-
-        chart_col = tk.Frame(bottom_row, bg=BG_CARD, highlightthickness=1, highlightbackground=BORDER_SUBTLE)
-        chart_col.grid(row=0, column=0, sticky="nsew", padx=(0, self._px(5)))
-
-        c_switch = tk.Frame(chart_col, bg=BG_CARD, padx=10, pady=5)
-        c_switch.pack(fill=tk.X)
-        tk.Label(
-            c_switch, text="📈 观测曲线切换:", bg=BG_CARD, fg=FG_MUTED, font=("Microsoft YaHei UI", 8)
-        ).pack(side=tk.LEFT, padx=(0, 6))
-
-        self._hub_chart_btns: Dict[str, tk.Button] = {}
-        for key, lbl in (("gemini", "Gemini 水位轨迹"), ("claude", "Claude/3P 轨迹"), ("spend", "14日等效账单")):
-            b = tk.Button(
-                c_switch,
-                text=lbl,
-                command=lambda k=key: self.select_hub_chart(k),
-                relief="flat",
-                padx=8,
-                pady=2,
-                font=("Microsoft YaHei UI", 8, "bold"),
-                cursor="hand2",
-            )
-            b.pack(side=tk.LEFT, padx=2)
-            self._hub_chart_btns[key] = b
-
-        self.hub_chart = OrionChartWidget(
-            chart_col,
-            title="近 24 小时 Gemini 配额水位轨迹",
-            height_px=self._px(145),
-            dpi_scale=self._dpi_scale,
-        )
-        self.hub_chart.configure(highlightthickness=0, padx=10, pady=4)
-        self.hub_chart.pack(fill=tk.BOTH, expand=True)
-        self.select_hub_chart("gemini")
-
-        log_box = tk.Frame(bottom_row, bg=BG_CARD, highlightthickness=1, highlightbackground=BORDER_SUBTLE)
-        log_box.grid(row=0, column=1, sticky="nsew", padx=(self._px(5), 0))
-        tk.Label(
-            log_box,
-            text="✦ 实时遥测事件流 (Event Stream)",
-            bg=BG_CARD,
-            fg=FG_MUTED,
-            padx=10,
-            pady=5,
-            font=("Microsoft YaHei UI", 8, "bold"),
-        ).pack(anchor="w")
-        self.txt_console = self._create_dark_text_box(log_box, fg_color="#e2e8f0", font_pt=8, height=6)
-        self._append_console("✦ 猎户座星盘观测台已就绪。正在读取 127.0.0.1 状态与本地账本...")
-
-    def _create_scrolled_treeview(
-        self,
-        parent: tk.Widget,
-        columns: Sequence[str],
-        headers: Sequence[Tuple[str, str, int, str]],
-        height: int,
-        expand: bool = False,
-    ) -> ttk.Treeview:
-        wrap = tk.Frame(parent, bg=BG_ROOT, highlightthickness=1, highlightbackground=BORDER_SUBTLE)
-        wrap.pack(fill=tk.BOTH if expand else tk.X, expand=expand, pady=(2, 8))
-        wrap.columnconfigure(0, weight=1)
-        wrap.rowconfigure(0, weight=1)
-        tree = ttk.Treeview(wrap, columns=columns, show="headings", height=height, style="Orion.Treeview")
-        vsb = ttk.Scrollbar(wrap, orient="vertical", command=tree.yview, style="Orion.Vertical.TScrollbar")
-        hsb = ttk.Scrollbar(wrap, orient="horizontal", command=tree.xview, style="Orion.Horizontal.TScrollbar")
-        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        for cid, text, base_w, anchor in headers:
-            tree.heading(cid, text=text)
-            tree.column(cid, width=self._px(base_w), minwidth=self._px(55), anchor=anchor, stretch=True)
-        tree.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
-        hsb.grid(row=1, column=0, sticky="ew")
-        return tree
-
-    def _build_ledger_tab(self) -> None:
-        self.lbl_auditor_banner = tk.Label(
-            self.tab_ledger,
-            text="正在汇总本地会话 Token 账本与扣费斜率...",
-            bg=BG_CARD_ALT,
-            fg=ACCENT_CYAN,
-            font=("Microsoft YaHei UI", 9, "bold"),
-            anchor="w",
-            justify="left",
-            padx=12,
-            pady=8,
-        )
-        self.lbl_auditor_banner.pack(fill=tk.X, pady=(2, 6))
-        self.tab_ledger.bind(
-            "<Configure>",
-            lambda e: self.lbl_auditor_banner.configure(wraplength=max(400, int(e.width) - 36)),
-        )
-
-        tk.Label(
-            self.tab_ledger,
-            text="📅 每日 Token 消耗与等效 API 美元明细 (近 14 天 · 严格本地只读统计)",
-            bg=BG_ROOT,
-            fg=ACCENT_ROSE,
-            font=("Microsoft YaHei UI", 9, "bold"),
-        ).pack(anchor="w")
-
-        cols_daily = ("date", "sessions", "steps", "input", "cache", "output", "u1x", "uintro", "uagy")
-        headers_daily = [
-            ("date", "日期", 95, "center"),
-            ("sessions", "会话数", 65, "e"),
-            ("steps", "推理步数", 70, "e"),
-            ("input", "新鲜 Input", 110, "e"),
-            ("cache", "缓存读取 Cache", 125, "e"),
-            ("output", "输出 Output", 105, "e"),
-            ("u1x", "1.0x 官方原价", 105, "e"),
-            ("uintro", "0.5x 承诺首发价", 110, "e"),
-            ("uagy", "1.5x AGY预设倍率估", 115, "e"),
-        ]
-        self.tree_daily = self._create_scrolled_treeview(
-            self.tab_ledger, cols_daily, headers_daily, height=5, expand=False
-        )
-
-        tk.Label(
-            self.tab_ledger,
-            text="🧠 近 14 天模型家族拆分与费率倍率审计",
-            bg=BG_ROOT,
-            fg=ACCENT_ROSE,
-            font=("Microsoft YaHei UI", 9, "bold"),
-        ).pack(anchor="w")
-
-        cols_mod = ("model", "pool", "steps", "incache", "output", "u1x", "uagy", "note")
-        headers_mod = [
-            ("model", "模型家族", 190, "w"),
-            ("pool", "配额桶", 70, "e"),
-            ("steps", "步数", 65, "e"),
-            ("incache", "Input + Cache", 130, "e"),
-            ("output", "Output", 100, "e"),
-            ("u1x", "1.0x 原价", 95, "e"),
-            ("uagy", "AGY 实际权重估", 110, "e"),
-            ("note", "费率审计状态", 180, "w"),
-        ]
-        self.tree_models = self._create_scrolled_treeview(
-            self.tab_ledger, cols_mod, headers_mod, height=4, expand=False
-        )
-
-        tk.Label(
-            self.tab_ledger,
-            text="💬 最近活跃会话账单明细 (Top 15)",
-            bg=BG_ROOT,
-            fg=ACCENT_ROSE,
-            font=("Microsoft YaHei UI", 9, "bold"),
-        ).pack(anchor="w")
-
-        cols_sess = ("date", "title", "model", "steps", "output", "u1x", "uagy")
-        headers_sess = [
-            ("date", "日期", 90, "e"),
-            ("title", "会话标题", 320, "w"),
-            ("model", "主模型", 180, "w"),
-            ("steps", "步数", 60, "e"),
-            ("output", "Output Tokens", 110, "e"),
-            ("u1x", "1.0x 原价", 90, "e"),
-            ("uagy", "AGY 权重估", 95, "e"),
-        ]
-        self.tree_sessions = self._create_scrolled_treeview(
-            self.tab_ledger, cols_sess, headers_sess, height=6, expand=True
-        )
-
-    def _build_vault_tab(self) -> None:
-        self.lbl_vault_banner = tk.Label(
-            self.tab_vault,
-            text="正在读取 Orion-Vault 对话防误删保险箱状态...",
-            bg=BG_CARD_ALT,
-            fg=ACCENT_CYAN,
-            font=("Microsoft YaHei UI", 9, "bold"),
-            anchor="w",
-            justify="left",
-            padx=12,
-            pady=8,
-        )
-        self.lbl_vault_banner.pack(fill=tk.X, pady=(2, 6))
-        self.tab_vault.bind(
-            "<Configure>",
-            lambda e: self.lbl_vault_banner.configure(wraplength=max(400, int(e.width) - 36)),
-        )
-
-        ctrl_bar = tk.Frame(
-            self.tab_vault,
-            bg=BG_CARD,
-            highlightthickness=1,
-            highlightbackground=BORDER_SUBTLE,
-            padx=10,
-            pady=8,
-        )
-        ctrl_bar.pack(fill=tk.X, pady=(0, 8))
-
-        self._btn_vault_switch = tk.Button(
-            ctrl_bar,
-            text="🟢 自动备份: 已开启 (点此关闭)",
-            command=self._toggle_vault_auto_backup,
-            bg="#065f46",
-            fg=FG_TEXT,
-            activebackground="#047857",
-            activeforeground=FG_TEXT,
-            font=("Microsoft YaHei UI", 9, "bold"),
-            relief="flat",
-            padx=10,
-            pady=4,
-            cursor="hand2",
-        )
-        self._btn_vault_switch.pack(side=tk.LEFT, padx=(0, 8))
-        self._action_buttons.append(self._btn_vault_switch)
-        self._sync_vault_switch_button(self._vault_auto_enabled)
-
-        self._btn_vault_filter = tk.Button(
-            ctrl_bar,
-            text="🔍 视图: 全部归档",
-            command=self._toggle_vault_filter,
-            bg="#334155",
-            fg=FG_TEXT,
-            activebackground="#475569",
-            activeforeground=FG_TEXT,
-            font=("Microsoft YaHei UI", 9),
-            relief="flat",
-            padx=10,
-            pady=4,
-            cursor="hand2",
-        )
-        self._btn_vault_filter.pack(side=tk.LEFT, padx=(0, 8))
-
-        tk.Label(ctrl_bar, text="检索:", bg=BG_CARD, fg=FG_MUTED, font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT)
-        self._vault_query_var = tk.StringVar(value="")
-        ent_q = tk.Entry(
-            ctrl_bar,
-            textvariable=self._vault_query_var,
-            bg=BG_VOID,
-            fg=FG_TEXT,
-            insertbackground=FG_TEXT,
-            relief="flat",
-            font=("Microsoft YaHei UI", 9),
-            width=18,
-        )
-        ent_q.pack(side=tk.LEFT, padx=(4, 6), ipady=3)
-        ent_q.bind("<Return>", lambda _e: self.refresh_all_async(silent=False))
-
-        btn_search = tk.Button(
-            ctrl_bar,
-            text="筛选",
-            command=lambda: self.refresh_all_async(silent=False),
-            bg="#1e293b",
-            fg=FG_TEXT,
-            font=("Microsoft YaHei UI", 9),
-            relief="flat",
-            padx=8,
-            pady=4,
-            cursor="hand2",
-        )
-        btn_search.pack(side=tk.LEFT, padx=(0, 10))
-
-        btn_export = tk.Button(
-            ctrl_bar,
-            text="📄 导出 Markdown",
-            command=self._on_vault_export_selected,
-            bg="#1e3a8a",
-            fg=FG_TEXT,
-            font=("Microsoft YaHei UI", 9, "bold"),
-            relief="flat",
-            padx=9,
-            pady=4,
-            cursor="hand2",
-        )
-        btn_export.pack(side=tk.RIGHT, padx=(6, 0))
-        self._action_buttons.append(btn_export)
-
-        btn_restore = tk.Button(
-            ctrl_bar,
-            text="♻️ 一键恢复已删",
-            command=self._on_vault_restore_selected,
-            bg=ACCENT_CRIMSON,
-            fg=FG_TEXT,
-            font=("Microsoft YaHei UI", 9, "bold"),
-            relief="flat",
-            padx=9,
-            pady=4,
-            cursor="hand2",
-        )
-        btn_restore.pack(side=tk.RIGHT, padx=(6, 0))
-        self._action_buttons.append(btn_restore)
-
-        btn_sync = tk.Button(
-            ctrl_bar,
-            text="⚡ 立即备份全量",
-            command=lambda: self._run_action(
-                "Orion-Vault · 手动全量增量备份",
-                lambda: self._vault.sync_all(respect_switch=False),
-            ),
-            bg="#4c1d95",
-            fg=FG_TEXT,
-            font=("Microsoft YaHei UI", 9, "bold"),
-            relief="flat",
-            padx=9,
-            pady=4,
-            cursor="hand2",
-        )
-        btn_sync.pack(side=tk.RIGHT)
-        self._action_buttons.append(btn_sync)
-
-        tk.Label(
-            self.tab_vault,
-            text="🗄️ 已归档会话列表 (客户端误删对话将自动标记为 [🗑️已删可恢复] 并置顶保留，绝不随主库连坐清理)",
-            bg=BG_ROOT,
-            fg=ACCENT_ROSE,
-            font=("Microsoft YaHei UI", 9, "bold"),
-        ).pack(anchor="w", pady=(0, 2))
-
-        cols_vault = ("status", "modified", "title", "model", "steps", "size", "uuid")
-        headers_vault = [
-            ("status", "主库状态", 115, "center"),
-            ("modified", "最后活跃时间", 130, "center"),
-            ("title", "会话标题", 360, "w"),
-            ("model", "主模型", 165, "w"),
-            ("steps", "步数", 65, "e"),
-            ("size", "归档体积", 95, "e"),
-            ("uuid", "Conversation UUID", 260, "w"),
-        ]
-        self.tree_vault = self._create_scrolled_treeview(
-            self.tab_vault, cols_vault, headers_vault, height=14, expand=True
-        )
-
-    def _build_diag_tab(self) -> None:
-        self.lbl_diag_summary = tk.Label(
-            self.tab_diag,
-            text="旁路安全审查 (Sidecar Risk Monitor) 与限流拥堵统计加载中...",
-            bg=BG_CARD_ALT,
-            fg=FG_TEXT,
-            font=("Consolas", 9),
-            anchor="w",
-            justify="left",
-            padx=12,
-            pady=8,
-        )
-        self.lbl_diag_summary.pack(fill=tk.X, pady=(2, 6))
-        self.tab_diag.bind(
-            "<Configure>",
-            lambda e: self.lbl_diag_summary.configure(wraplength=max(360, int(e.width) - 36)),
-        )
-
-        self.diag_wave_chart = OrionChartWidget(
-            self.tab_diag,
-            title="⚡ 旁路风控模型 (sir_flash_lite) 最近请求附加耗时示波器 (ms)",
-            height_px=self._px(145),
-            dpi_scale=self._dpi_scale,
-        )
-        self.diag_wave_chart.pack(fill=tk.X, pady=(0, 8))
-
-        self.txt_diag = self._create_dark_text_box(self.tab_diag, fg_color="#cbd5e1", font_pt=9, height=12, pad_xy=(0, 0))
 
     def _append_console(self, line: str) -> None:
         if self._closing:
@@ -3114,261 +955,6 @@ class AcerolaOrionApp(tk.Tk):
             return
         self._run_action(f"导出对话 Markdown {cid[:8]}", lambda: self._vault.export_markdown(cid))
 
-    def _build_quota_points(self, col_key: str, live_bucket: Any) -> List[Tuple[str, float]]:
-        pts: List[Tuple[str, float]] = []
-        for row in self._last_quota_series:
-            v = row.get(col_key)
-            if isinstance(v, (int, float)) and math.isfinite(v):
-                pts.append((str(row.get("label") or ""), float(v)))
-        if live_bucket is not None and math.isfinite(getattr(live_bucket, "remaining_pct", math.nan)):
-            now_lbl = datetime.now().strftime("%H:%M")
-            live_v = float(live_bucket.remaining_pct)
-            if not pts or abs(pts[-1][1] - live_v) > 0.001 or pts[-1][0] != now_lbl:
-                pts.append((now_lbl, live_v))
-        return pts
-
-    def _build_daily_spend_points(self) -> List[Tuple[str, float]]:
-        # self._last_daily is descending or chronological; sort ascending by date for left-to-right timeline
-        rows = sorted(self._last_daily, key=lambda d: str(getattr(d, "local_date", "")))
-        out: List[Tuple[str, float]] = []
-        for d in rows[-14:]:
-            dt_s = str(getattr(d, "local_date", ""))
-            short_dt = dt_s[5:] if len(dt_s) >= 10 else dt_s
-            val = float(getattr(d, "usd_agy_est", 0.0) or 0.0)
-            out.append((short_dt, val))
-        return out
-
-    def _refresh_active_charts_and_zen(self) -> None:
-        r = self._last_report
-        if r is None:
-            return
-        bmap = {b.bucket_id: b for b in r.quota_buckets}
-        missing_msg = "客户端未启动" if not r.ls_running else "暂无该通道数据"
-
-        g5 = bmap.get("gemini-5h")
-        gw = bmap.get("gemini-weekly")
-        p5 = bmap.get("3p-5h")
-        pw = bmap.get("3p-weekly")
-
-        gem_pts = self._build_quota_points("gemini_5h", g5)
-        cld_pts = self._build_quota_points("p3_5h", p5)
-        spend_pts = self._build_daily_spend_points()
-        sc = r.log_stats.sidecar
-        lat_pts = [(f"#{i + 1}", float(v)) for i, v in enumerate(sc.recent_durations_ms[-36:])]
-
-        # 1. Update Full Mode Hub Chart
-        if self._hub_chart_kind == "gemini":
-            cur_badge = f"最新 {g5.remaining_pct:.2f}%" if g5 and math.isfinite(g5.remaining_pct) else ""
-            self.hub_chart.set_series(
-                "📈 近 24 小时 Gemini 5h 配额水位轨迹 (%)",
-                gem_pts,
-                mode="area",
-                line_color=ACCENT_CYAN,
-                fill_color="#0f2438",
-                unit_suffix="%",
-                fixed_y_range=(0.0, 100.0),
-                empty_hint="打开 Antigravity 后自动绘制 Gemini 配额水位轨迹",
-                summary_badge=cur_badge,
-            )
-        elif self._hub_chart_kind == "claude":
-            cur_badge = f"最新 {p5.remaining_pct:.2f}%" if p5 and math.isfinite(p5.remaining_pct) else ""
-            self.hub_chart.set_series(
-                "📈 近 24 小时 Claude / 3P 5h 配额水位轨迹 (%)",
-                cld_pts,
-                mode="area",
-                line_color=ACCENT_ROSE,
-                fill_color="#2e1020",
-                unit_suffix="%",
-                fixed_y_range=(0.0, 100.0),
-                empty_hint="当前暂无 Claude / 3P 配额采样记录",
-                summary_badge=cur_badge,
-            )
-        else:
-            tot_14d = sum(v for _, v in spend_pts)
-            self.hub_chart.set_series(
-                "📊 近 14 天每日等效消耗趋势 (1.5x 权重美元折算)",
-                spend_pts,
-                mode="bar",
-                line_color=ACCENT_GOLD,
-                fill_color="#38220f",
-                unit_prefix="$",
-                unit_suffix="",
-                fixed_y_range=None,
-                empty_hint="近期暂无本地对话 Token 账单记录",
-                summary_badge=f"14日累计 ${tot_14d:.2f}",
-            )
-
-        # 2. Update Diagnostics Waveform Chart
-        self.diag_wave_chart.set_series(
-            "⚡ 旁路安全审查 (sir_flash_lite) 最近请求附加耗时示波器 (ms)",
-            lat_pts,
-            mode="area",
-            line_color=ACCENT_ROSE,
-            fill_color="#2d0f1e",
-            unit_suffix=" ms",
-            fixed_y_range=None,
-            empty_hint="本次会话日志中暂未捕获 sir_flash_lite 旁路审查耗时样本",
-            summary_badge=f"均值 {sc.avg_ms:.0f} ms · 峰值 {sc.max_ms:.0f} ms" if sc.eval_count else "0 次触发",
-        )
-
-        # 3. Update Zen / Simplified Mode (1 Hero Metric + 1 Chart ONLY)
-        zm = self._zen_metric
-        if zm == "gemini":
-            self.zen_dial.lbl_title.configure(text="✦ Gemini 可用配额水位")
-            self.zen_dial.set_quota_pair(
-                g5.remaining_fraction if g5 else math.nan,
-                g5.reset_countdown if g5 else "--",
-                g5.reset_time if g5 else "",
-                gw.remaining_fraction if gw else math.nan,
-                gw.reset_countdown if gw else "--",
-                offline_reason=missing_msg,
-            )
-            self.zen_chart.set_series(
-                "近 24 小时配额水位变化趋势",
-                gem_pts,
-                mode="area",
-                line_color=ACCENT_CYAN,
-                fill_color="#0f2438",
-                unit_suffix="%",
-                fixed_y_range=(0.0, 100.0),
-                empty_hint="打开 Antigravity 后将自动记录并绘制水位曲线",
-                summary_badge=f"当前 {g5.remaining_pct:.1f}%" if g5 and math.isfinite(g5.remaining_pct) else "",
-            )
-        elif zm == "claude":
-            self.zen_dial.lbl_title.configure(text="◆ Claude / GPT 第三方池配额水位")
-            self.zen_dial.set_quota_pair(
-                p5.remaining_fraction if p5 else math.nan,
-                p5.reset_countdown if p5 else "--",
-                p5.reset_time if p5 else "",
-                pw.remaining_fraction if pw else math.nan,
-                pw.reset_countdown if pw else "--",
-                offline_reason=missing_msg,
-            )
-            self.zen_chart.set_series(
-                "近 24 小时 Claude / 3P 配额水位变化趋势",
-                cld_pts,
-                mode="area",
-                line_color=ACCENT_ROSE,
-                fill_color="#2e1020",
-                unit_suffix="%",
-                fixed_y_range=(0.0, 100.0),
-                empty_hint="暂无 Claude / 3P 历史水位采样点",
-                summary_badge=f"当前 {p5.remaining_pct:.1f}%" if p5 and math.isfinite(p5.remaining_pct) else "",
-            )
-        elif zm == "spend":
-            today_str = datetime.now().strftime("%Y-%m-%d")
-            today_row = next((d for d in self._last_daily if getattr(d, "local_date", "") == today_str), None)
-            today_usd = float(getattr(today_row, "usd_agy_est", 0.0) or 0.0) if today_row else 0.0
-            today_steps = int(getattr(today_row, "steps", 0) or 0) if today_row else 0
-            peak_usd = max([v for _, v in spend_pts] + [10.0])
-            ring_f = min(1.0, today_usd / peak_usd) if peak_usd > 0 else 0.0
-            self.zen_dial.lbl_title.configure(text="◈ 今日累计等效消耗")
-            self.zen_dial.set_custom_metric(
-                ring_fraction=max(0.04, ring_f) if today_usd > 0 else 0.0,
-                top_caption="今日等效消耗估值",
-                big_value=f"${today_usd:.2f}",
-                sub_caption=f"今日共完成 {today_steps} 轮有效推理",
-                badge_text="📒 本地只读记账",
-                badge_fg=ACCENT_GOLD,
-                badge_bg="#3a2807",
-                footer_text="基于本地会话 Token 自动折算（零联网、零隐私上传）",
-                ring_colors=(ACCENT_GOLD, "#422d0b"),
-            )
-            tot_14d = sum(v for _, v in spend_pts)
-            self.zen_chart.set_series(
-                "近 14 天每日等效消耗统计图 (USD)",
-                spend_pts,
-                mode="bar",
-                line_color=ACCENT_GOLD,
-                fill_color="#38220f",
-                unit_prefix="$",
-                unit_suffix="",
-                fixed_y_range=None,
-                empty_hint="最近 14 天暂无本地会话记录",
-                summary_badge=f"14日合计 ${tot_14d:.2f}",
-            )
-        elif zm == "cache":
-            rst = self.__dict__.get("_radar_state", CacheRadarState())
-            fg_col, bar_col, _ = _radar_palette(rst)
-            if rst.phase == PHASE_ACTIVE:
-                big_v = "推理中"
-                b_txt, b_fg, b_bg, r_cols = ("⚡ 活跃推理", ACCENT_CYAN, ACCENT_CYAN_DIM, (ACCENT_CYAN, ACCENT_CYAN_DIM))
-            elif rst.phase == PHASE_HOT:
-                big_v = format_mmss(rst.remaining_sec, pad_min=True)
-                b_txt, b_fg, b_bg, r_cols = ("🔥 缓存热态", ACCENT_GREEN, ACCENT_GREEN_DIM, (ACCENT_GREEN, ACCENT_GREEN_DIM))
-            elif rst.phase == PHASE_WARNING:
-                big_v = format_mmss(rst.remaining_sec, pad_min=True)
-                b_txt, b_fg, b_bg, r_cols = ("⚠️ 临期预警", ACCENT_ROSE, ACCENT_CRIMSON_DIM, (ACCENT_ROSE, ACCENT_CRIMSON_DIM))
-            elif rst.phase == PHASE_COLD:
-                big_v = "00:00"
-                b_txt, b_fg, b_bg, r_cols = ("❄️ 缓存已冷", FG_MUTED, BG_CARD_ALT, ("#475569", BG_CARD_ALT))
-            else:
-                big_v = "--:--"
-                b_txt, b_fg, b_bg, r_cols = ("⚪ 待命观测", FG_MUTED, BG_CARD_ALT, ("#334155", BG_CARD_ALT))
-            _ = (fg_col, bar_col)
-            self.zen_dial.lbl_title.configure(text="📡 活跃会话 KV 缓存 250s 余温")
-            self.zen_dial.set_custom_metric(
-                ring_fraction=rst.ttl_fraction,
-                top_caption=f"当前监控上下文 {rst.context_label}",
-                big_value=big_v,
-                sub_caption=f"上轮缓存命中率 {rst.cache_hit_pct}% (读取 {rst.cache_read_tokens:,})",
-                badge_text=b_txt,
-                badge_fg=b_fg,
-                badge_bg=b_bg,
-                footer_text=rst.badge_text,
-                ring_colors=r_cols,
-            )
-            cache_pts = [
-                (
-                    str(getattr(d, "local_date", ""))[5:] if len(str(getattr(d, "local_date", ""))) >= 10 else str(getattr(d, "local_date", "")),
-                    round(float(getattr(d, "cache_read_tokens", 0) or 0) / 1_000_000.0, 2),
-                )
-                for d in sorted(self._last_daily, key=lambda item: str(getattr(item, "local_date", "")))[-14:]
-            ]
-            tot_m = sum(v for _, v in cache_pts)
-            self.zen_chart.set_series(
-                "近 14 天每日缓存命中读取总量 (百万 Tokens / M)",
-                cache_pts,
-                mode="bar",
-                line_color=ACCENT_CYAN,
-                fill_color="#0f2438",
-                unit_suffix="M",
-                fixed_y_range=None,
-                empty_hint="近期暂无本地缓存读取记录",
-                summary_badge=f"14日累计 {tot_m:.1f}M",
-            )
-        else:  # latency
-            avg_ms = float(sc.avg_ms or 0.0)
-            # Smoothness score: 0ms -> 100% ring, >=2500ms -> 15% ring
-            health_f = max(0.12, 1.0 - min(0.88, avg_ms / 2500.0)) if sc.eval_count > 0 else 1.0
-            if sc.timeout_count > 0 or avg_ms >= 1200:
-                b_txt, b_fg, b_bg, r_cols = ("🟠 审查偏慢", ACCENT_AMBER, ACCENT_AMBER_DIM, (ACCENT_AMBER, ACCENT_AMBER_DIM))
-            else:
-                b_txt, b_fg, b_bg, r_cols = ("🟢 响应顺畅", ACCENT_GREEN, ACCENT_GREEN_DIM, (ACCENT_GREEN, ACCENT_GREEN_DIM))
-            self.zen_dial.lbl_title.configure(text="⚡ 客户端响应与风控顺畅度")
-            self.zen_dial.set_custom_metric(
-                ring_fraction=health_f,
-                top_caption="旁路安全审查平均耗时",
-                big_value=f"{avg_ms:.0f} ms" if sc.eval_count > 0 else "0 ms",
-                sub_caption=f"429 限流拥堵 {r.log_stats.http_429_503_count} 次",
-                badge_text=b_txt,
-                badge_fg=b_fg,
-                badge_bg=b_bg,
-                footer_text=f"本轮累计审查 {sc.eval_count} 次 · 峰值 {sc.max_ms:.0f} ms",
-                ring_colors=r_cols,
-            )
-            self.zen_chart.set_series(
-                "最近请求旁路审查延迟波动图 (ms)",
-                lat_pts,
-                mode="area",
-                line_color=ACCENT_GREEN if avg_ms < 1200 else ACCENT_AMBER,
-                fill_color="#0a2e23" if avg_ms < 1200 else "#38220f",
-                unit_suffix=" ms",
-                fixed_y_range=None,
-                empty_hint="暂未检测到风控附加延迟（当前请求通道完全畅通）",
-                summary_badge=f"峰值 {sc.max_ms:.0f} ms" if sc.eval_count else "畅通无阻",
-            )
-
     def _apply_ui_data(
         self,
         r: OrionTelemetryReport,
@@ -3387,651 +973,102 @@ class AcerolaOrionApp(tk.Tk):
         self._last_report = r
         self._last_daily = list(daily)
         self._last_audit = audit
-        self.lbl_sync_time.configure(text=f"同步: {r.captured_at}  |  LS PID={r.ls_pid or '离线'}")
-
-        # Plate 1: Local IPC Topology
-        if not r.ls_running:
-            self.lbl_ipc_main.configure(text="⚪ 离线 (客户端未启动)", fg=FG_MUTED)
-            self.lbl_ipc_sub.configure(text="启动 Antigravity 后自动锁定回环端口")
-        else:
-            ver_txt = f"v{r.ide_version}" if r.ide_version else "在线"
-            self.lbl_ipc_main.configure(text=f"🟢 在线 ({ver_txt})", fg=ACCENT_GREEN)
-            self.lbl_ipc_sub.configure(
-                text=f"127.0.0.1:{r.http_port} | 主进程 PID={r.main_pids}\n网络策略: {r.proxy_mode}"
-            )
-
-        # Plate 2: Tier, 1.5x Preset Estimate Quick Look & Congestion
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        today_row = next((d for d in daily if getattr(d, "local_date", "") == today_str), None)
-        phantom_cnt = len(getattr(audit, "phantom_drains", []) or [])
-        phantom_tag = "0疑似空耗" if phantom_cnt == 0 else f"⚠️异常掉点x{phantom_cnt}"
-        if r.ls_running:
-            tier_txt = r.paid_tier_name or r.paid_tier_id or r.user_tier_id or "未知 Tier"
-            self.lbl_tier_main.configure(text=f"👑 {tier_txt}", fg=ACCENT_CYAN)
-            sc = r.log_stats.sidecar
-            td_usd = f"${today_row.usd_agy_est:.2f}" if today_row else "$0.00"
-            self.lbl_tier_sub.configure(
-                text=f"今日预设倍率估: {td_usd} ({phantom_tag}) | 主429: {r.log_stats.http_429_503_count}次 (旁路{getattr(r.log_stats, 'aux_429_count', 0)}次)\n"
-                f"旁路审查均值: {sc.avg_ms:.0f} ms (10s超时 {sc.timeout_count} 次)"
-            )
-        else:
-            td_usd = f"${today_row.usd_agy_est:.2f}" if today_row else "$0.00"
-            self.lbl_tier_main.configure(text=f"📒 今日账本 {td_usd}", fg=ACCENT_GOLD)
-            self.lbl_tier_sub.configure(text=f"对账体征: {phantom_tag} | 累计快照 {getattr(audit, 'total_snapshots', 0)} 笔")
-
-        # Plate 3: Guillotine Process Guard
-        g = r.guard
-        if g.mutex_active:
-            self.lbl_guard_main.configure(text="🟢 进程守卫运行中", fg=ACCENT_GREEN)
-        else:
-            self.lbl_guard_main.configure(text="⚪ 守卫未驻留", fg=ACCENT_AMBER)
-        leg_warn = f" | ⚠️旧脚本:{g.legacy_pids}" if g.legacy_buggy_killer_active else ""
-        auto_desc = "开机静默自启(不弹面板)" if g.scheduled_task_installed else "未开自启"
-        self.lbl_guard_sub.configure(
-            text=f"{auto_desc} · 防关窗压缩/污染记忆 | hub:{r.stale_hub_files}{leg_warn}"
+        apply_builtin_tabs_data(
+            self,
+            r,
+            daily,
+            models,
+            sessions,
+            audit,
+            guard_lines,
+            ls_tail,
+            silent,
+            vault_st=vault_st,
+            vault_rows=vault_rows,
         )
-
-        # Dual Orion Astrolabe Chronographs (Full Mode)
-        bmap = {b.bucket_id: b for b in r.quota_buckets}
-        missing_msg = "客户端未运行" if not r.ls_running else "暂无配额数据"
-        g5 = bmap.get("gemini-5h")
-        gw = bmap.get("gemini-weekly")
-        p5 = bmap.get("3p-5h")
-        pw = bmap.get("3p-weekly")
-
-        self.dial_gemini.set_quota_pair(
-            g5.remaining_fraction if g5 else math.nan,
-            g5.reset_countdown if g5 else "--",
-            g5.reset_time if g5 else "",
-            gw.remaining_fraction if gw else math.nan,
-            gw.reset_countdown if gw else "--",
-            offline_reason=missing_msg,
-        )
-        self.dial_claude.set_quota_pair(
-            p5.remaining_fraction if p5 else math.nan,
-            p5.reset_countdown if p5 else "--",
-            p5.reset_time if p5 else "",
-            pw.remaining_fraction if pw else math.nan,
-            pw.reset_countdown if pw else "--",
-            offline_reason=missing_msg,
-        )
-
-        # Update All Charts & Zen Mode View
-        self._refresh_active_charts_and_zen()
-
-        # Ledger Tab
-        if today_row:
-            t_summary = (
-                f"📌 今日用量 ({today_str}): {today_row.sessions} 个会话 / {today_row.steps} 步  |  "
-                f"Input={today_row.input_tokens:,}  Cache={today_row.cache_read_tokens:,}  Output={today_row.output_tokens:,}  |  "
-                f"1.0x原价=${today_row.usd_1x:.2f}  (0.5x估算=${today_row.usd_intro:.2f} / 1.5x预设倍率估=${today_row.usd_agy_est:.2f})\n"
-                f"🔍 快照分析: {audit.verdict}"
-            )
-        else:
-            t_summary = f"📌 今日暂无 Token 记录  |  🔍 快照分析: {audit.verdict}"
-        self.lbl_auditor_banner.configure(text=t_summary)
-
-        self.tree_daily.delete(*self.tree_daily.get_children())
-        for d in daily:
-            self.tree_daily.insert(
-                "",
-                tk.END,
-                values=(
-                    d.local_date,
-                    d.sessions,
-                    d.steps,
-                    f"{d.input_tokens:,}",
-                    f"{d.cache_read_tokens:,}",
-                    f"{d.output_tokens:,}",
-                    f"${d.usd_1x:.2f}",
-                    f"${d.usd_intro:.2f}",
-                    f"${d.usd_agy_est:.2f}",
-                ),
+        self._refresh_header_badge(r)
+        host = self.__dict__.get("_plugin_host")
+        if host is not None:
+            host.notify_refresh(
+                r,
+                {
+                    "report": r,
+                    "daily": daily,
+                    "models": models,
+                    "sessions": sessions,
+                    "audit": audit,
+                    "guard_lines": guard_lines,
+                    "ls_tail": ls_tail,
+                    "silent": silent,
+                    "vault_st": vault_st,
+                    "vault_rows": vault_rows,
+                    "app": self,
+                    "host": host,
+                },
             )
 
-        self.tree_models.delete(*self.tree_models.get_children())
-        for m in models:
-            self.tree_models.insert(
-                "",
-                tk.END,
-                values=(
-                    m.family_label,
-                    m.quota_group,
-                    m.steps,
-                    f"{(m.input_tokens + m.cache_read_tokens):,}",
-                    f"{m.output_tokens:,}",
-                    f"${m.usd_1x:.2f}",
-                    f"${m.usd_agy_est:.2f}",
-                    m.multiplier_note,
-                ),
-            )
-
-        self.tree_sessions.delete(*self.tree_sessions.get_children())
-        for s in sessions:
-            self.tree_sessions.insert(
-                "",
-                tk.END,
-                values=(
-                    s.local_date,
-                    s.title,
-                    s.primary_model,
-                    s.steps,
-                    f"{s.output_tokens:,}",
-                    f"${s.usd_1x:.2f}",
-                    f"${s.usd_agy_est:.2f}",
-                ),
-            )
-
-        # Diagnostics Tab
-        ls = r.log_stats
-        sc = ls.sidecar
-        self.lbl_diag_summary.configure(
-            text=(
-                f"旁路安全审查 (sir_flash_lite / severe_internal_risks_agy): 累计 {sc.eval_count} 次 "
-                f"(一审失败={getattr(sc, 'stage1_fail_count', 0)} / 二审失败={getattr(sc, 'stage2_fail_count', 0)}) | "
-                f"均值 {sc.avg_ms:.0f} ms | 峰值 {sc.max_ms:.0f} ms | 10s超时 {sc.timeout_count} 次\n"
-                f"容量耗尽排队: {ls.capacity_exhausted_count} 次 | 主对话 429/503: {ls.http_429_503_count} 次 | "
-                f"旁路杂项 429: {getattr(ls, 'aux_429_count', 0)} 次 | 埋点超时: {getattr(ls, 'telemetry_timeout_count', 0)} 次 | "
-                f"网络断流: {ls.network_changed_count} 次 | 残留 hub: {r.stale_hub_files} 个"
-            )
-        )
-        cleaned_ls_tail = [strip_glog_init_noise(ln) for ln in ls_tail]
-        self.txt_diag.delete("1.0", tk.END)
-        self.txt_diag.insert(tk.END, "=== [Acerola-Guillotine 守护日志 (guillotine.log)] ===\n")
-        self.txt_diag.insert(tk.END, ("\n".join(guard_lines) if guard_lines else "(暂无守护日志记录)") + "\n\n")
-        self.txt_diag.insert(tk.END, "=== [language_server.log 最新尾部流 (无锁只读 · 已剥离 glog 前缀)] ===\n")
-        self.txt_diag.insert(tk.END, "\n".join(cleaned_ls_tail) + "\n")
-
-        # Vault Tab
-        if vault_st is not None and hasattr(self, "lbl_vault_banner"):
-            self._last_vault_status = vault_st
-            self._sync_vault_switch_button(vault_st.auto_backup_enabled)
-            sw_txt = (
-                "🟢 已开启 (每轮对话结束实时增量归档)"
-                if vault_st.auto_backup_enabled
-                else "⚪ 已关闭 (暂停自动备份 · 历史归档保留)"
-            )
-            self.lbl_vault_banner.configure(
-                text=(
-                    f"🗄️ 自动备份总开关: {sw_txt}  |  已保护总会话: {vault_st.total_conversations} 个 "
-                    f"(🟢在线={vault_st.active_conversations} / 🗑️已删可恢复={vault_st.deleted_conversations})  |  "
-                    f"总占用: {vault_st.total_vault_mb:.2f} MB  |  最近同步: {_fmt_cn_time(vault_st.last_sync_at)}\n"
-                    f"📂 归档目录: {vault_st.vault_dir}"
-                ),
-                fg=ACCENT_GREEN if vault_st.auto_backup_enabled else ACCENT_AMBER,
-            )
-        if vault_rows is not None and hasattr(self, "tree_vault"):
-            prev_sel_cid = self._get_selected_vault_conv_id()
-            self.tree_vault.delete(*self.tree_vault.get_children())
-            reselect_iid = None
-            for vr in vault_rows:
-                badge = "🗑️ 已删可恢复" if vr.live_status == "deleted" else "🟢 主库在线"
-                kb = (vr.conv_db_bytes + vr.brain_bytes) / 1024.0
-                size_str = f"{kb / 1024.0:.2f} MB" if kb >= 1024.0 else f"{kb:.0f} KB"
-                iid = self.tree_vault.insert(
-                    "",
-                    tk.END,
-                    values=(
-                        badge,
-                        _fmt_cn_time(vr.last_modified_at),
-                        vr.title,
-                        vr.model_name or "-",
-                        vr.step_count,
-                        size_str,
-                        vr.conv_id,
-                    ),
-                )
-                if prev_sel_cid and vr.conv_id == prev_sel_cid:
-                    reselect_iid = iid
-            if reselect_iid is not None:
-                self.tree_vault.selection_set(reselect_iid)
-
-        def _pct_txt(bid: str) -> str:
-            b = bmap.get(bid)
-            v = getattr(b, "remaining_pct", math.nan) if b is not None else math.nan
-            return f"{v:.2f}%" if isinstance(v, (int, float)) and math.isfinite(v) else "--.--%"
-
-        self._last_base_tooltip = (
-            f"{APP_CODENAME} · 5h: {_pct_txt('gemini-5h')} | 周: {_pct_txt('gemini-weekly')}"
-        )
-        if "_radar_state" in self.__dict__:
-            self._apply_radar_state_to_ui(self._radar_state, force_tooltip=True)
-        else:
-            tray = self.__dict__.get("_tray")
-            if tray is not None and tray.active:
-                tray.update_tooltip(self._last_base_tooltip)
-
-        if not silent:
-            self._append_console(
-                f"✓ 星盘同步: Tier={r.paid_tier_id or r.user_tier_id or '-'} "
-                f"Gemini-5h={_pct_txt('gemini-5h')} "
-                f"Weekly={_pct_txt('gemini-weekly')}"
-            )
-
+    # ------------------------------------------------------------------
+    # Passive KV Cache Radar & Floating Capsule Controls (delegated to ui.radar_controller)
+    # ------------------------------------------------------------------
     def _get_effective_hud_mode(self) -> str:
-        return normalize_hud_mode(self.__dict__.get("_hud_mode", "smart"))
+        return _rc.get_effective_hud_mode(self)
 
     def _get_effective_target_spec(self) -> Tuple[str, str]:
-        return normalize_target_mode(
-            self.__dict__.get("_target_mode", TARGET_MODE_SMART_GUARD),
-            self.__dict__.get("_pinned_conv_id", ""),
-        )
+        return _rc.get_effective_target_spec(self)
 
-    def _on_radar_card_configure(self, event: tk.Event) -> None:
-        lbl = self.__dict__.get("lbl_radar_sub")
-        if lbl is not None:
-            lbl.configure(wraplength=max(360, int(event.width) - 28))
-        lbl_tier = self.__dict__.get("lbl_radar_tier_alert")
-        if lbl_tier is not None:
-            lbl_tier.configure(wraplength=max(260, int(event.width) - self._px(155)))
-        canvas = self.__dict__.get("radar_canvas")
-        if canvas is not None and int(canvas.winfo_width()) <= 10:
-            self._redraw_radar_bar(allow_defer=False)
+    def _on_radar_card_configure(self, event: tk.Event) -> None:  # type: ignore[type-arg]
+        _rc.on_radar_card_configure(self, event)
 
     def _redraw_radar_bar(self, *, allow_defer: bool = True) -> None:
-        canvas = self.__dict__.get("radar_canvas")
-        if canvas is None:
-            return
-        canvas.delete("all")
-        cw = int(canvas.winfo_width())
-        ch = int(canvas.winfo_height())
-        if cw <= 10:
-            card = self.__dict__.get("radar_card")
-            if card and int(card.winfo_width()) > 30:
-                cw = max(10, int(card.winfo_width()) - 28)
-            elif allow_defer and not self.__dict__.get("_radar_defer_pending", False):
-                self._radar_defer_pending = True
-                self.after_idle(self._redraw_radar_bar_later)
-        w = max(10, cw)
-        h = max(4, ch)
-        canvas.create_rectangle(0, 0, w, h, fill=BG_VOID, outline="")
-        frac = max(0.0, min(1.0, float(self.__dict__.get("_radar_bar_fraction", 0.0))))
-        fw = int(round(w * frac))
-        if fw > 0:
-            canvas.create_rectangle(0, 0, fw, h, fill=self.__dict__.get("_radar_bar_color", BORDER_SUBTLE), outline="")
-        # 60s last-minute warning tick (24% of 250s horizon)
-        warn_x = int(round(w * (60.0 / CACHE_SAFE_TTL_SEC)))
-        if 2 < warn_x < w - 2:
-            canvas.create_line(warn_x, 0, warn_x, h, fill=ACCENT_CRIMSON_DIM, width=1)
+        _rc.redraw_radar_bar(self, allow_defer=allow_defer)
 
     def _redraw_radar_bar_later(self) -> None:
-        self._radar_defer_pending = False
-        if not self.__dict__.get("_closing") and self.winfo_exists():
-            self._redraw_radar_bar(allow_defer=False)
+        _rc.redraw_radar_bar_later(self)
 
     def _refresh_hud_mode_buttons(self) -> None:
-        btns = self.__dict__.get("_hud_mode_buttons") or {}
-        cur = self._get_effective_hud_mode()
-        for k, btn in btns.items():
-            if k == cur:
-                btn.configure(bg=ACCENT_CRIMSON, fg="#ffffff")
-            else:
-                btn.configure(bg=BG_CARD_ALT, fg=FG_MUTED)
+        _rc.refresh_hud_mode_buttons(self)
 
     def _refresh_target_switch_button(self) -> None:
-        btn = self.__dict__.get("btn_target_switch")
-        if btn is None:
-            return
-        t_mode, pin_cid = self._get_effective_target_spec()
-        if t_mode == TARGET_MODE_PINNED and pin_cid:
-            btn.configure(text=f"📌 锁 {pin_cid[:6]} ▾", bg=ACCENT_CRIMSON_DIM, fg=ACCENT_ROSE)
-        elif t_mode == TARGET_MODE_LATEST:
-            btn.configure(text="🔄 跟最新 ▾", bg=BG_CARD_ALT, fg=FG_TEXT)
-        else:
-            btn.configure(text="🧠 守大窗 ▾", bg=ACCENT_CYAN_DIM, fg=ACCENT_CYAN)
+        _rc.refresh_target_switch_button(self)
 
     def _popup_target_menu(self) -> None:
-        btn = self.__dict__.get("btn_target_switch")
-        if btn is None:
-            return
-        menu = self.__dict__.get("_target_menu")
-        if menu is None:
-            menu = tk.Menu(
-                self,
-                tearoff=0,
-                bg="#16111f",
-                fg=FG_TEXT,
-                activebackground=ACCENT_CRIMSON,
-                activeforeground="#ffffff",
-                font=("Microsoft YaHei UI", 9),
-            )
-            self._target_menu = menu
-        menu.delete(0, tk.END)
+        _rc.popup_target_menu(self)
 
-        t_mode, pin_cid = self._get_effective_target_spec()
-        menu.add_command(
-            label=f"{'● ' if t_mode == TARGET_MODE_SMART_GUARD else '○ '}🧠 智能守大窗 (≥100K未冷优先 · 推荐)",
-            command=lambda: self.set_radar_target(TARGET_MODE_SMART_GUARD, ""),
-        )
-        menu.add_command(
-            label=f"{'● ' if t_mode == TARGET_MODE_LATEST else '○ '}🔄 纯跟随最新活跃窗口",
-            command=lambda: self.set_radar_target(TARGET_MODE_LATEST, ""),
-        )
-        menu.add_separator()
-
-        radar = self.__dict__.get("_cache_radar")
-        sessions = radar.list_recent_sessions(limit=8) if radar is not None else []
-        if not sessions:
-            menu.add_command(label="  (暂无可锁定的历史会话记录)", state=tk.DISABLED)
-        else:
-            for cand in sessions:
-                is_pin = t_mode == TARGET_MODE_PINNED and pin_cid and cand.conv_id.lower() == pin_cid.lower()
-                mark = "● " if is_pin else "○ "
-                menu.add_command(
-                    label=f"{mark}📌 锁定: {cand.menu_label}",
-                    command=lambda cid=cand.conv_id: self.set_radar_target(TARGET_MODE_PINNED, cid),
-                )
-
-        try:
-            bx = int(btn.winfo_rootx())
-            by = int(btn.winfo_rooty() + btn.winfo_height() + 2)
-            menu.tk_popup(bx, by)
-        finally:
-            try:
-                menu.grab_release()
-            except Exception:
-                pass
-
-    def set_radar_target(
-        self,
-        target_mode: str,
-        pinned_conv_id: str = "",
-        persist: bool = True,
-    ) -> Tuple[str, str]:
-        radar = self.__dict__.get("_cache_radar")
-        if radar is not None:
-            norm_mode, norm_pin = radar.set_target(target_mode, pinned_conv_id)
-            st = radar.sample()
-        else:
-            norm_mode, norm_pin = normalize_target_mode(target_mode, pinned_conv_id)
-            st = self.__dict__.get("_radar_state", CacheRadarState())
-        self._target_mode = norm_mode
-        self._pinned_conv_id = norm_pin
-        self._radar_state = st
-        self._refresh_target_switch_button()
-        self._apply_radar_state_to_ui(st, force_tooltip=True)
-        if self.auto_refresh_ms > 0:
-            self._ensure_radar_loops()
-        if persist:
-            _save_ui_prefs(radar_target_mode=norm_mode, radar_pinned_conv_id=norm_pin)
-        if "txt_console" in self.__dict__:
-            if norm_mode == TARGET_MODE_PINNED and norm_pin:
-                title_hint = f"「{st.conv_title}」" if getattr(st, "conv_title", "") else ""
-                self._append_console(f"✦ 缓存雷达已手动锁定监控窗口: {norm_pin[:8]} {title_hint}".strip())
-            else:
-                self._append_console(
-                    f"✦ 缓存雷达监控策略已切换为: [{TARGET_MODE_LABELS.get(norm_mode, norm_mode)}]"
-                )
-        return norm_mode, norm_pin
+    def set_radar_target(self, target_mode: str, pinned_conv_id: str = "", persist: bool = True) -> Tuple[str, str]:
+        return _rc.set_radar_target(self, target_mode, pinned_conv_id, persist, save_prefs=_save_ui_prefs)
 
     def copy_compact_command(self) -> str:
-        txt = COMPACT_COMMAND_TEXT
-        self._last_copied_text = txt
-        try:
-            self.clipboard_clear()
-            self.clipboard_append(txt)
-            self.update_idletasks()
-        except Exception:
-            pass
-        hud = self.__dict__.get("_hud_win")
-        if hud is not None:
-            try:
-                hud.flash_toast(f"✓ 已复制「{txt}」· 粘贴压缩防 2x 翻倍", duration_sec=1.8)
-            except Exception:
-                pass
-        if "txt_console" in self.__dict__:
-            self._append_console(
-                f"✓ 已复制上下文压缩口令「{txt}」到剪贴板 — 粘贴到当前超长窗口发送即可压缩上下文、避开 200K 双倍 (2x) 计价。"
-            )
-        return txt
+        return _rc.copy_compact_command(self)
 
     def set_hud_mode(self, mode: str, persist: bool = True) -> str:
-        norm = normalize_hud_mode(mode)
-        self._hud_mode = norm
-        self._refresh_hud_mode_buttons()
-        radar = self.__dict__.get("_cache_radar")
-        st = radar.evaluate_cached() if radar is not None else self.__dict__.get("_radar_state", CacheRadarState())
-        self._radar_state = st
-        self._apply_radar_state_to_ui(st, force_tooltip=True)
-        if self.auto_refresh_ms > 0:
-            self._ensure_radar_loops()
-        if persist:
-            _save_ui_prefs(hud_mode=norm)
-        if "txt_console" in self.__dict__:
-            self._append_console(f"✦ 缓存悬浮胶囊模式已切换为: [{HUD_MODE_LABELS.get(norm, norm)}]")
-        return norm
+        return _rc.set_hud_mode(self, mode, persist, save_prefs=_save_ui_prefs)
 
     def _on_hud_drag_end(self, x: int, y: int) -> None:
-        self._hud_pos = (int(x), int(y))
-        _save_ui_prefs(hud_x=int(x), hud_y=int(y))
+        _rc.on_hud_drag_end(self, x, y, save_prefs=_save_ui_prefs)
 
     def _should_show_hud(self, state: CacheRadarState) -> bool:
-        mode = self._get_effective_hud_mode()
-        if mode == "always":
-            return True
-        if mode == "smart":
-            if bool(state.should_pop_smart_hud):
-                return True
-            until_m = float(self.__dict__.get("_tier_hud_until_mono", 0.0))
-            if until_m > 0.0 and time.monotonic() < until_m and (
-                bool(getattr(state, "is_near_2x", False)) or bool(getattr(state, "is_over_2x", False))
-            ):
-                return True
-        return False
+        return _rc.should_show_hud(self, state)
 
     def _track_2x_tier_crossing(self, state: CacheRadarState) -> None:
-        cid = str(getattr(state, "conv_id", "") or "").strip().lower()
-        if not cid:
-            return
-        levels = self.__dict__.get("_notified_tier_levels")
-        if not isinstance(levels, dict):
-            levels = {}
-            self.__dict__["_notified_tier_levels"] = levels
-
-        is_2x = bool(getattr(state, "is_over_2x", False))
-        is_near = bool(getattr(state, "is_near_2x", False))
-        cur_lvl = 2 if is_2x else (1 if is_near else 0)
-        prev_lvl = int(levels.get(cid, 0))
-
-        if cur_lvl < prev_lvl:
-            levels[cid] = cur_lvl
-            if cur_lvl == 0:
-                self._tier_hud_until_mono = 0.0
-            return
-
-        if cur_lvl > prev_lvl and state.phase in (PHASE_ACTIVE, PHASE_HOT, PHASE_WARNING):
-            levels[cid] = cur_lvl
-            if len(levels) > 64:
-                oldest_cid = next(iter(levels))
-                if oldest_cid != cid:
-                    levels.pop(oldest_cid, None)
-            self._tier_hud_until_mono = time.monotonic() + 12.0
-            hud = self.__dict__.get("_hud_win")
-            if cur_lvl == 2:
-                toast_msg = f"💸 {state.context_label} 已超200K！再聊下去双倍计价(2x)"
-                log_msg = (
-                    f"💸 [200K双倍计价告警] 会话 {cid[:8]} 上下文已达 {state.context_label} (≥200K)，"
-                    f"再聊下去每轮均按 2x 双倍扣减配额！建议执行 {COMPACT_COMMAND_TEXT} 或开新窗口。"
-                )
-            else:
-                gap_lbl = format_tokens_compact(max(1, int(getattr(state, "tokens_to_2x", 0))))
-                toast_msg = f"⚠️ {state.context_label} 逼近200K！仅差{gap_lbl}触发2x计价"
-                log_msg = (
-                    f"⚠️ [逼近200K翻倍线] 会话 {cid[:8]} 上下文已达 {state.context_label}（距 200K 仅差 {gap_lbl}），"
-                    f"继续长聊即将触发 2x 双倍计价，建议适时 {COMPACT_COMMAND_TEXT}。"
-                )
-            if hud is not None:
-                try:
-                    hud.flash_toast(toast_msg, duration_sec=8.0)
-                except Exception:
-                    pass
-            if "txt_console" in self.__dict__:
-                self._append_console(log_msg)
+        _rc.track_2x_tier_crossing(self, state)
 
     def _apply_radar_state_to_ui(self, state: CacheRadarState, force_tooltip: bool = False) -> None:
-        if self.__dict__.get("_closing"):
-            return
-        self._radar_state = state
-        self._track_2x_tier_crossing(state)
-        fg_color, bar_color, border_color = _radar_palette(state)
-
-        if not self.__dict__.get("_hidden_to_tray"):
-            if "lbl_radar_main" in self.__dict__:
-                self.lbl_radar_main.configure(text=state.badge_text, fg=fg_color)
-                self.lbl_radar_sub.configure(
-                    text=state.detail_text,
-                    fg=ACCENT_ROSE
-                    if (state.phase == PHASE_COLD and getattr(state, "is_over_2x", False))
-                    else (
-                        ACCENT_AMBER
-                        if (state.phase == PHASE_COLD and state.context_tokens >= LARGE_CONTEXT_HINT_TOKENS)
-                        else FG_MUTED
-                    ),
-                )
-
-                badge_lbl = self.__dict__.get("lbl_radar_tier_badge")
-                tier_badge_txt = str(getattr(state, "tier_badge_text", "") or "")
-                if badge_lbl is not None:
-                    if tier_badge_txt:
-                        is_2x = bool(getattr(state, "is_over_2x", False))
-                        badge_lbl.configure(
-                            text=tier_badge_txt,
-                            bg="#4c0519" if is_2x else "#451a03",
-                            fg="#fda4af" if is_2x else "#fcd34d",
-                        )
-                        if not self.__dict__.get("_radar_tier_badge_packed", False):
-                            badge_lbl.pack(side=tk.LEFT, padx=(6, 4))
-                            self._radar_tier_badge_packed = True
-                    elif self.__dict__.get("_radar_tier_badge_packed", False):
-                        badge_lbl.pack_forget()
-                        self._radar_tier_badge_packed = False
-
-                tier_bar = self.__dict__.get("radar_tier_bar")
-                tier_alert_lbl = self.__dict__.get("lbl_radar_tier_alert")
-                btn_compact = self.__dict__.get("btn_copy_compact")
-                tier_alert_txt = str(getattr(state, "tier_alert_text", "") or "")
-                if tier_bar is not None and tier_alert_lbl is not None:
-                    if tier_alert_txt:
-                        is_2x = bool(getattr(state, "is_over_2x", False))
-                        bar_bg = "#2a0a18" if is_2x else "#291805"
-                        bar_bd = ACCENT_CRIMSON if is_2x else ACCENT_AMBER
-                        bar_fg = "#fda4af" if is_2x else "#fcd34d"
-                        tier_bar.configure(bg=bar_bg, highlightbackground=bar_bd)
-                        tier_alert_lbl.configure(text=tier_alert_txt, bg=bar_bg, fg=bar_fg)
-                        if btn_compact is not None:
-                            btn_compact.configure(
-                                bg=ACCENT_CRIMSON if is_2x else "#b45309",
-                                fg="#ffffff",
-                            )
-                        if not self.__dict__.get("_radar_tier_bar_packed", False):
-                            tier_bar.pack(fill=tk.X, pady=(5, 0))
-                            self._radar_tier_bar_packed = True
-                    elif self.__dict__.get("_radar_tier_bar_packed", False):
-                        tier_bar.pack_forget()
-                        self._radar_tier_bar_packed = False
-
-                self.radar_card.configure(highlightbackground=border_color)
-                self._radar_bar_fraction = state.ttl_fraction
-                self._radar_bar_color = bar_color
-                self._redraw_radar_bar()
-            if self.__dict__.get("_view_mode") == "zen" and self.__dict__.get("_zen_metric") == "cache":
-                self._refresh_active_charts_and_zen()
-
-        hud = self.__dict__.get("_hud_win")
-        if hud is not None:
-            hud.render_state(state, visible=self._should_show_hud(state))
-
-        tray = self.__dict__.get("_tray")
-        if tray is not None and tray.active:
-            now_m = time.monotonic()
-            hidden = bool(self.__dict__.get("_hidden_to_tray"))
-            if force_tooltip or (not hidden) or (now_m - float(self.__dict__.get("_last_tray_tip_mono", 0.0)) >= 5.0):
-                base_tip = str(self.__dict__.get("_last_base_tooltip") or f"{APP_CODENAME} v{APP_VERSION}")
-                full_tip = _compose_tray_tooltip(base_tip, state)
-                if force_tooltip or full_tip != self.__dict__.get("_last_sent_tooltip"):
-                    self._last_sent_tooltip = full_tip
-                    self._last_tray_tip_mono = now_m
-                    tray.update_tooltip(full_tip)
+        _rc.apply_radar_state_to_ui(self, state, force_tooltip=force_tooltip)
 
     def _radar_loops_needed(self) -> bool:
-        if self.__dict__.get("_closing") or self.auto_refresh_ms <= 0:
-            return False
-        return (not bool(self.__dict__.get("_hidden_to_tray"))) or (self._get_effective_hud_mode() != "off")
+        return _rc.radar_loops_needed(self)
 
     def _schedule_after_safe(self, delay_ms: int, callback: Callable[[], None]) -> bool:
-        if "tk" not in self.__dict__ and "after" not in self.__dict__:
-            return False
-        try:
-            self.after(delay_ms, callback)
-            return True
-        except Exception:
-            return False
+        return _rc.schedule_after_safe(self, delay_ms, callback)
 
     def _ensure_radar_loops(self) -> None:
-        if not self._radar_loops_needed():
-            return
-        if not self.__dict__.get("_radar_tick_scheduled"):
-            if self._schedule_after_safe(1000, self._on_radar_memory_tick):
-                self._radar_tick_scheduled = True
-        if not self.__dict__.get("_radar_poll_scheduled"):
-            if self._schedule_after_safe(400, self._on_radar_bg_poll):
-                self._radar_poll_scheduled = True
+        _rc.ensure_radar_loops(self)
 
     def _on_radar_memory_tick(self) -> None:
-        self._radar_tick_scheduled = False
-        if not self._radar_loops_needed():
-            return
-        radar = self.__dict__.get("_cache_radar")
-        if radar is not None:
-            st = radar.evaluate_cached()
-            self._apply_radar_state_to_ui(st)
-        if self._radar_loops_needed():
-            if self._schedule_after_safe(1000, self._on_radar_memory_tick):
-                self._radar_tick_scheduled = True
+        _rc.on_radar_memory_tick(self)
 
     def _on_radar_bg_poll(self) -> None:
-        self._radar_poll_scheduled = False
-        if not self._radar_loops_needed():
-            return
-        radar = self.__dict__.get("_cache_radar")
-        if radar is not None and not self.__dict__.get("_radar_poll_busy"):
-            self._radar_poll_busy = True
-
-            def _poll_worker() -> None:
-                try:
-                    st = radar.sample()
-                    self._ui_call(lambda s=st: self._apply_radar_state_to_ui(s))
-                except Exception:
-                    pass
-                finally:
-                    self._ui_call(lambda: setattr(self, "_radar_poll_busy", False))
-
-            threading.Thread(target=_poll_worker, daemon=True).start()
-
-        if self._radar_loops_needed():
-            if self._schedule_after_safe(3000, self._on_radar_bg_poll):
-                self._radar_poll_scheduled = True
-
-
-def _terminate_existing_panel_instance() -> None:
-    """Cleanly replace an already-running Public Astrolabe panel instance when --reload is requested."""
-    if sys.platform != "win32":
-        return
-    try:
-        user32 = ctypes.WinDLL("user32", use_last_error=True)
-        user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
-        user32.FindWindowW.restype = wintypes.HWND
-        user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
-        hwnd = user32.FindWindowW(TRAY_CLASS_NAME, None) or user32.FindWindowW(None, _panel_window_title())
-        if hwnd:
-            pid = wintypes.DWORD(0)
-            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-            if pid.value:
-                terminate_pid_win32(int(pid.value), allowed_exe_prefixes=("python",))
-                time.sleep(0.15)
-    except Exception:
-        pass
+        _rc.on_radar_bg_poll(self)
 
 
 def launch_panel(
@@ -4054,3 +1091,44 @@ def launch_panel(
     app = AcerolaOrionApp(start_minimized=start_minimized, initial_mode=initial_mode)
     app.mainloop()
     return 0
+
+
+__all__ = [
+    "APP_USER_MODEL_ID",
+    "TRAY_CLASS_NAME",
+    "BG_VOID",
+    "BG_ROOT",
+    "BG_HEADER",
+    "BG_CARD",
+    "BG_CARD_ALT",
+    "BG_DIAL_WELL",
+    "FG_TEXT",
+    "FG_SUB",
+    "FG_MUTED",
+    "FG_DIM",
+    "ACCENT_CRIMSON",
+    "ACCENT_CRIMSON_DIM",
+    "ACCENT_ROSE",
+    "ACCENT_CYAN",
+    "ACCENT_CYAN_DIM",
+    "ACCENT_GREEN",
+    "ACCENT_GREEN_DIM",
+    "ACCENT_AMBER",
+    "ACCENT_AMBER_DIM",
+    "ACCENT_GOLD",
+    "ACCENT_VIOLET",
+    "BORDER_SUBTLE",
+    "BORDER_CRIMSON",
+    "BORDER_ACTIVE",
+    "PALETTE",
+    "HUD_MODE_LABELS",
+    "TARGET_MODE_LABELS",
+    "clamp_hud_coords",
+    "CacheRadarHudWindow",
+    "QuotaBarWidget",
+    "AstrolabeDialWidget",
+    "OrionChartWidget",
+    "PanelPluginHost",
+    "AcerolaOrionApp",
+    "launch_panel",
+]

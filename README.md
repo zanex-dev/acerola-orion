@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zanex-dev/acerola-orion/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-20%2F20%20passing-brightgreen" alt="Tests" /></a>
+  <a href="https://github.com/zanex-dev/acerola-orion/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-42%2F42%20passing-brightgreen" alt="Tests" /></a>
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v1.4.0-be123c" alt="Version v1.4.0" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-e11d48.svg" alt="License: MIT" /></a>
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.10%2B%20(0%20deps)-3776AB.svg" alt="Python 3.10+" /></a>
@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md"><strong>English</strong></a> · <a href="README_ZH.md"><strong>简体中文</strong></a> · <a href="CHANGELOG.md">Changelog</a>
+  <a href="README.md"><strong>English</strong></a> · <a href="README_ZH.md"><strong>简体中文</strong></a> · <a href="docs/PLUGIN_ARCHITECTURE.md">Plugin Architecture</a> · <a href="CHANGELOG.md">Changelog</a>
 </p>
 
 ---
@@ -37,7 +37,7 @@ Built from day one with strict local physical boundaries so anyone can inspect a
 
 ```powershell
 # Inspect every network, subprocess, and sensitive keyword across the entire package:
-Select-String -Path .\acerola_orion\*.py -Pattern "HTTPConnection|socket|subprocess|vscdb|Cookie|oauth"
+Get-ChildItem .\acerola_orion -Recurse -Filter *.py | Select-String -Pattern "HTTPConnection|socket|subprocess|vscdb|Cookie|oauth"
 ```
 
 ---
@@ -105,7 +105,7 @@ acerola-orion guard uninstall
 - **Silent Logon Autostart (Never Pops Up the Dashboard)**: Across PC reboots, Windows automatically starts **only** the headless `guard daemon` in the background — no console flash, no tray clutter, and **it never pops up the GUI panel unless you open `panel` yourself**.
 - **Autostart Transparency & 1-Click Removal**: `guard install` writes a 3-line plain-text VBScript at `~/.gemini/acerola_orion/start_guard_silent.vbs` (launching `pythonw.exe -m acerola_orion guard daemon`) and registers a user-level Windows Logon Scheduled Task named `AcerolaOrionGuard` (no admin UAC required, zero registry or `app.asar` changes). Running `acerola-orion guard uninstall` (or clicking **`⏹️ 停用`**) stops the daemon and deletes both cleanly.
 
-Run the verification & security self-audit suite (`20/20` tests):
+Run the verification & security self-audit suite (`42/42` tests):
 
 ```powershell
 python -m unittest discover -s tests -v

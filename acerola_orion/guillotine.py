@@ -32,6 +32,7 @@ from .constants import (
     get_guillotine_log_path,
     load_vault_config,
 )
+from .core.kernel import get_kernel
 from .ledger import OrionLedger
 from .rpc import (
     SYNCHRONIZE,
@@ -434,12 +435,27 @@ def _daemon_body(max_cycles: int = 0) -> int:
         tele_state["thread"] = t
         t.start()
 
+    bus = get_kernel().bus
+    seen_ls_pids: set[int] = set()
+    daemon_state: Dict[str, Any] = {}
+
     def _reset_all_tracking() -> None:
         sealed_login_ls_pids.clear()
         next_seal_try.clear()
         seal_backoff.clear()
+        seen_ls_pids.clear()
 
     try:
+        bus.emit(
+            "guard_start",
+            {
+                "pid": os.getpid(),
+                "max_cycles": max_cycles,
+                "config": load_vault_config(),
+                "log": _log_guard,
+                "state": daemon_state,
+            },
+        )
         while not _guard_stop_file().exists():
             if max_cycles > 0 and cycle_count >= max_cycles:
                 break
@@ -449,33 +465,6 @@ def _daemon_body(max_cycles: int = 0) -> int:
             tree = find_antigravity_process_tree(entries)
             main_pids = tree["main_pids"]
             ls_pids = tree["ls_pids"]
-
-            if not main_pids:
-                phantom_main_cycles = 0
-                if tracked_servers:
-                    killed = _release_tracked_servers(tracked_servers, stop=True)
-                    _log_guard(f"UI closed: terminated tracked servers {killed}")
-                    _reset_all_tracking()
-                for _ in range(10):
-                    if _guard_stop_file().exists():
-                        break
-                    time.sleep(0.2)
-                continue
-
-            live_ls_set = set(ls_pids)
-            for pid in list(tracked_servers):
-                if pid not in live_ls_set:
-                    close_handle_safe(tracked_servers.pop(pid))
-            for pid in ls_pids:
-                if pid not in tracked_servers:
-                    verified = open_owned_language_server(pid, entries)
-                    if verified is not None:
-                        tracked_servers[pid] = verified
-
-            sealed_login_ls_pids.intersection_update(live_ls_set)
-            for tracking_map in (next_seal_try, seal_backoff):
-                for dead_pid in [k for k in tracking_map if k not in live_ls_set]:
-                    del tracking_map[dead_pid]
 
             now = time.time()
             try:
@@ -493,6 +482,73 @@ def _daemon_body(max_cycles: int = 0) -> int:
                 cfg_cache_loaded_at = now
                 cfg_cache_valid = True
             cfg = cfg_cache
+
+            if not main_pids:
+                phantom_main_cycles = 0
+                if tracked_servers:
+                    killed = _release_tracked_servers(tracked_servers, stop=True)
+                    _log_guard(f"UI closed: terminated tracked servers {killed}")
+                    _reset_all_tracking()
+                else:
+                    seen_ls_pids.intersection_update(set(ls_pids))
+                bus.emit(
+                    "guard_tick",
+                    {
+                        "pid": os.getpid(),
+                        "cycle": cycle_count,
+                        "now": now,
+                        "main_pids": [],
+                        "ls_pids": list(ls_pids),
+                        "tracked_ls_pids": [],
+                        "entries": entries,
+                        "config": cfg,
+                        "log": _log_guard,
+                        "state": daemon_state,
+                    },
+                )
+                for _ in range(10):
+                    if _guard_stop_file().exists():
+                        break
+                    time.sleep(0.2)
+                continue
+
+            live_ls_set = set(ls_pids)
+            for pid in list(tracked_servers):
+                if pid not in live_ls_set:
+                    close_handle_safe(tracked_servers.pop(pid))
+            for pid in ls_pids:
+                if pid not in tracked_servers:
+                    verified = open_owned_language_server(pid, entries)
+                    if verified is not None:
+                        tracked_servers[pid] = verified
+
+            sealed_login_ls_pids.intersection_update(live_ls_set)
+            seen_ls_pids.intersection_update(live_ls_set)
+            for tracking_map in (next_seal_try, seal_backoff):
+                for dead_pid in [k for k in tracking_map if k not in live_ls_set]:
+                    del tracking_map[dead_pid]
+
+            new_ls_pids = [lpid for lpid in ls_pids if lpid not in seen_ls_pids]
+            for lpid in new_ls_pids:
+                seen_ls_pids.add(lpid)
+                if bus.has_listeners("guard_ls_seen"):
+                    hub_info = discover_hub_endpoint(lpid, live_pids=live_ls_set)
+                    bus.emit(
+                        "guard_ls_seen",
+                        {
+                            "pid": lpid,
+                            "ls_pid": lpid,
+                            "main_pids": list(main_pids),
+                            "ls_pids": list(ls_pids),
+                            "entries": entries,
+                            "hub": hub_info,
+                            "cycle": cycle_count,
+                            "now": now,
+                            "config": cfg,
+                            "log": _log_guard,
+                            "state": daemon_state,
+                        },
+                    )
 
             with tele_lock:
                 tele_res = tele_state["result"]
@@ -560,6 +616,22 @@ def _daemon_body(max_cycles: int = 0) -> int:
                     vault_state["last_conv_dir_mtime"] = cdir_mt
                     _launch_vault_sweep()
 
+            bus.emit(
+                "guard_tick",
+                {
+                    "pid": os.getpid(),
+                    "cycle": cycle_count,
+                    "now": now,
+                    "main_pids": list(main_pids),
+                    "ls_pids": list(ls_pids),
+                    "tracked_ls_pids": list(tracked_servers.keys()),
+                    "entries": entries,
+                    "config": cfg,
+                    "log": _log_guard,
+                    "state": daemon_state,
+                },
+            )
+
             handles: List[int] = []
             alive_unwaitable = False
             use_real_kernel_handle = open_process_handle is _ORIG_OPEN_PROCESS_HANDLE
@@ -612,6 +684,15 @@ def _daemon_body(max_cycles: int = 0) -> int:
         return 0
     finally:
         vault_stop_evt.set()
+        bus.emit(
+            "guard_stop",
+            {
+                "pid": os.getpid(),
+                "cycles": cycle_count,
+                "log": _log_guard,
+                "state": daemon_state,
+            },
+        )
         _release_tracked_servers(tracked_servers)
         tele_thread = tele_state.get("thread")
         if isinstance(tele_thread, threading.Thread) and tele_thread.is_alive():

@@ -9,6 +9,7 @@ import math
 from typing import List, Optional
 
 from .constants import APP_CODENAME, APP_TRINITY, APP_VERSION
+from .core.kernel import get_kernel
 from .ledger import DailyUsageRow, ModelUsageRow, RateAuditReport, SessionUsageRow
 from .telemetry import OrionTelemetryReport
 from .vault import VaultSearchHit, VaultSessionItem, VaultStatusReport, _fmt_cn_time
@@ -95,6 +96,15 @@ def render_telemetry_report(
         lines.append(
             f"  ● ⚠️ 遗留脚本告警: 检测到旧版轮询脚本 ag_kill_orphan 仍在运行 (PID={g.legacy_pids})，建议手动停用并删除旧计划任务。"
         )
+
+    for chunk in get_kernel().bus.emit("render_status_lines", r):
+        if isinstance(chunk, str):
+            if chunk:
+                lines.append(chunk)
+        elif isinstance(chunk, (list, tuple)):
+            for item in chunk:
+                if item is not None:
+                    lines.append(str(item))
 
     if r.rpc_errors:
         lines.append("\n  [RPC 告警] " + " | ".join(r.rpc_errors))

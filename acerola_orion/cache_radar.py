@@ -12,7 +12,7 @@ Orion-CacheRadar 本地活跃会话上下文与 Prompt KV 缓存倒计时观测�
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import json
 import math
@@ -25,6 +25,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from .constants import get_agy_brain_dir
+from .core.kernel import get_kernel
 from .ledger import _decode_pbtxt_title, cache_read_count
 from .rpc import read_shared_tail_bytes
 
@@ -225,6 +226,7 @@ class CacheRadarState:
     tier_badge_text: str = ""
     hud_tier_tag: str = ""
     tier_alert_text: str = ""
+    extensions: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -688,6 +690,8 @@ class CacheRadarSampler:
         self._latest_snap: Optional[TranscriptTailSnapshot] = None
         self._latest_title: str = ""
         self._selected_smart_guarded: bool = False
+        self._cached_extensions: Dict[str, Any] = {}
+        self._cached_extensions_conv_id: str = ""
         self.tail_read_count: int = 0
 
     def get_target(self) -> Tuple[str, str]:
@@ -971,7 +975,7 @@ class CacheRadarSampler:
             pin_ref = self._pinned_conv_id
             guard_ref = self._selected_smart_guarded
 
-        return evaluate_cache_radar_state(
+        state = evaluate_cache_radar_state(
             snap_ref,
             now_epoch=now_ep,
             conv_title=title_ref,
@@ -979,6 +983,11 @@ class CacheRadarSampler:
             pinned_conv_id=pin_ref,
             smart_guarded=guard_ref,
         )
+        get_kernel().bus.emit("enrich_radar", state)
+        with self._lock:
+            self._cached_extensions = dict(state.extensions)
+            self._cached_extensions_conv_id = state.conv_id
+        return state
 
     def evaluate_cached(self, now_epoch: Optional[float] = None) -> CacheRadarState:
         """Pure in-memory 1s tick re-evaluation with ZERO disk or network I/O."""
@@ -991,6 +1000,8 @@ class CacheRadarSampler:
             tmode_ref = self._target_mode
             pin_ref = self._pinned_conv_id
             guard_ref = self._selected_smart_guarded
+            cached_ext = dict(self._cached_extensions)
+            cached_ext_cid = self._cached_extensions_conv_id
 
         state = evaluate_cache_radar_state(
             snap_ref,
@@ -1008,7 +1019,7 @@ class CacheRadarSampler:
             and latest_ref is not None
             and (snap_ref is None or latest_ref.conv_id != snap_ref.conv_id)
         ):
-            return evaluate_cache_radar_state(
+            state = evaluate_cache_radar_state(
                 latest_ref,
                 now_epoch=now_ep,
                 conv_title=latest_title_ref,
@@ -1016,4 +1027,6 @@ class CacheRadarSampler:
                 pinned_conv_id=pin_ref,
                 smart_guarded=False,
             )
+        if cached_ext and state.conv_id == cached_ext_cid:
+            state.extensions.update(cached_ext)
         return state

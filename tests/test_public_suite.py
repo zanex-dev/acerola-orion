@@ -32,6 +32,7 @@ import acerola_orion.__main__ as cli_main
 import acerola_orion.cache_radar as cache_radar
 import acerola_orion.cli_render as cli_render
 import acerola_orion.constants as constants
+from acerola_orion.core.kernel import DISABLE_PLUGINS_ENV, reset_kernel_for_tests
 import acerola_orion.guillotine as guillotine
 import acerola_orion.ledger as ledger_mod
 import acerola_orion.panel as panel_mod
@@ -119,11 +120,19 @@ class AcerolaOrionPublicSuite(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory(prefix="orion_pub_")
         self.tmp_path = Path(self._tmp.name)
         self._old_home = os.environ.get("ACEROLA_ORION_HOME")
+        self._old_disable_plugins = os.environ.get(DISABLE_PLUGINS_ENV)
         os.environ["ACEROLA_ORION_HOME"] = str(self.tmp_path / "orion_home")
+        os.environ[DISABLE_PLUGINS_ENV] = "1"
+        reset_kernel_for_tests()
         telemetry.reset_log_cursor_cache()
 
     def tearDown(self) -> None:
+        reset_kernel_for_tests()
         telemetry.reset_log_cursor_cache()
+        if self._old_disable_plugins is None:
+            os.environ.pop(DISABLE_PLUGINS_ENV, None)
+        else:
+            os.environ[DISABLE_PLUGINS_ENV] = self._old_disable_plugins
         if self._old_home is None:
             os.environ.pop("ACEROLA_ORION_HOME", None)
         else:
@@ -133,11 +142,17 @@ class AcerolaOrionPublicSuite(unittest.TestCase):
     def test_01_static_security_zero_egress_and_clean_room_audit(self) -> None:
         """Verify zero external HTTP deps, strict 127.0.0.1 loopback, zero credential access, and clean surface."""
         repo_root = Path(__file__).resolve().parent.parent
-        py_files = sorted((repo_root / "acerola_orion").glob("*.py"))
-        self.assertGreaterEqual(len(py_files), 11)
+        py_files = sorted(
+            p
+            for p in (repo_root / "acerola_orion").rglob("*.py")
+            if "_versions" not in p.parts and "__pycache__" not in p.parts
+        )
+        self.assertGreaterEqual(len(py_files), 15)
         py_names = {p.name for p in py_files}
         self.assertIn("vault.py", py_names)
         self.assertIn("vault_hook.py", py_names)
+        self.assertIn("kernel.py", py_names)
+        self.assertIn("plugin_host.py", py_names)
         self.assertNotIn("mux.py", py_names)
         self.assertNotIn("scal" + "pel.py", py_names)
 
@@ -170,6 +185,8 @@ class AcerolaOrionPublicSuite(unittest.TestCase):
             "account_" + "email",
             "companion_" + "project",
             "model_pool_" + "quotas",
+            "orion_" + "private",
+            "task_" + "board",
         ]
 
         scan_targets = list(py_files) + [

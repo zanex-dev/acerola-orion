@@ -34,6 +34,7 @@ from .constants import (
     configure_vault_auto_backup,
     get_launchers_dir,
 )
+from .core.kernel import get_kernel
 from .guillotine import (
     install_guard_autostart,
     retire_legacy_orphan_killer,
@@ -123,13 +124,28 @@ def deploy_agyrun_launchers(launchers_dir: Optional[Path] = None) -> List[str]:
         "orion-vault-toggle.ps1": _ps1_cli("vault toggle"),
     }
 
+    extra_files = get_kernel().collect_extra_launchers(str(py_exe), str(pyw_exe), pkg_root)
+    for ext_name, ext_body in extra_files.items():
+        if not ext_name or ext_name in files:
+            continue
+        if Path(ext_name).name != ext_name or ext_name in (".", "..") or "/" in ext_name or "\\" in ext_name:
+            continue
+        files[ext_name] = ext_body
+
     written: List[str] = []
     for name, body in files.items():
         p = l_dir / name
         if name.endswith(".ps1"):
             enc = "utf-8-sig"
-        elif name.endswith(".cmd"):
-            enc = cmd_encoding
+        elif name.endswith(".cmd") or name.endswith(".bat"):
+            if body.isascii():
+                enc = "ascii"
+            else:
+                try:
+                    body.encode(cmd_encoding)
+                    enc = cmd_encoding
+                except (LookupError, UnicodeEncodeError):
+                    enc = "utf-8"
         else:
             enc = "utf-8"
         atomic_write_text(p, body, encoding=enc)
@@ -244,6 +260,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_vt.add_argument("--auto-only", action="store_true", help="sync 模式下遵循自动备份开关状态")
     p_vt.add_argument("--json", action="store_true", help="输出结构化 JSON")
 
+    get_kernel().register_cli(sub)
     return parser
 
 
@@ -552,6 +569,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                 prefix = "✅" if res_e.get("ok") else "❌"
                 print(f"{prefix} {res_e.get('message')}")
             return 0 if res_e.get("ok") else 1
+
+    plugin_rc = get_kernel().handle_cli(cmd, args)
+    if plugin_rc is not None:
+        return int(plugin_rc)
 
     parser.print_help()
     return 1

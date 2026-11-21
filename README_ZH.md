@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zanex-dev/acerola-orion/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-20%2F20%20passing-brightgreen" alt="Tests" /></a>
+  <a href="https://github.com/zanex-dev/acerola-orion/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-42%2F42%20passing-brightgreen" alt="Tests" /></a>
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v1.4.0-be123c" alt="Version v1.4.0" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-e11d48.svg" alt="License: MIT" /></a>
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.10%2B%20(0%20deps)-3776AB.svg" alt="Python 3.10+" /></a>
@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md"><strong>English</strong></a> · <a href="README_ZH.md"><strong>简体中文</strong></a> · <a href="CHANGELOG_ZH.md">更新日志</a>
+  <a href="README.md"><strong>English</strong></a> · <a href="README_ZH.md"><strong>简体中文</strong></a> · <a href="docs/PLUGIN_ARCHITECTURE.md">插件架构指南</a> · <a href="CHANGELOG_ZH.md">更新日志</a>
 </p>
 
 ---
@@ -37,7 +37,7 @@
 
 ```powershell
 # 一键检索全仓所有网络、凭据与外部进程调用，结果一目了然：
-Select-String -Path .\acerola_orion\*.py -Pattern "HTTPConnection|socket|subprocess|vscdb|Cookie|oauth"
+Get-ChildItem .\acerola_orion -Recurse -Filter *.py | Select-String -Pattern "HTTPConnection|socket|subprocess|vscdb|Cookie|oauth"
 ```
 
 ---
@@ -139,7 +139,7 @@ acerola-orion guard uninstall
 
 > **系统驻留透明度说明**：执行 `guard install` 仅在用户目录 `~/.gemini/acerola_orion/start_guard_silent.vbs` 生成 3 行明文 VBScript（用于在登录时不弹黑框拉起 `pythonw.exe -m acerola_orion guard daemon`），并注册当前用户级计划任务 `AcerolaOrionGuard`（无需管理员提权、不修改注册表或客户端 `app.asar`）。执行 `guard uninstall` 即可一键彻底清除。
 
-### 3. 运行安全自审与单元测试套件（`20/20` 项）
+### 3. 运行安全自审与单元测试套件（`42/42` 项）
 
 ```powershell
 python -m unittest discover -s tests -v
