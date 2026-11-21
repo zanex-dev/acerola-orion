@@ -4,7 +4,7 @@ Orion-Ledger 本地 Token 明细账本与黑盒电子秤验钞机 (acerola_orion
 - 严格媒体隐私隔离 (Heart-Under-Blade 兼容)：仅读取 brain/<uuid>/.system_generated/logs/transcript.jsonl
   与 annotations/<uuid>.pbtxt 纯文本，绝不枚举或打开 .user_uploaded、tempmediaStorage 或任何媒体文件。
 - 增量 SQLite 索引：毫秒级汇总每日 / 每模型 / 每会话 Input、Cache-Read、Output Token 与等效美元成本。
-- 高精度配额快照库：检测下号重登期间的「幽灵掉点」(Phantom Offline Drain)，并实测推算谷歌当前的扣费斜率与等效额度池容量。
+- 高精度配额快照库：比对本机步骤与配额变化，按预设价格推算趋势。
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import bisect
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import math
 import os
@@ -20,6 +21,7 @@ from pathlib import Path
 import re
 import sqlite3
 import stat
+from statistics import median
 import threading
 import time
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
@@ -30,6 +32,7 @@ from .constants import (
     get_agy_annotations_dir,
     get_agy_brain_dir,
     get_ledger_db_path,
+    interprocess_file_lock,
 )
 from .telemetry import OrionTelemetryReport
 
@@ -104,6 +107,7 @@ class PhantomDrainEvent:
     gemini_5h_drop_pct: float
     gemini_weekly_drop_pct: float
     p3_weekly_drop_pct: float
+    p3_5h_drop_pct: float = 0.0
 
 
 @dataclass
@@ -344,6 +348,33 @@ def _parse_step_index(raw_idx: Any, fallback_neg_idx: int) -> int:
     return fallback_neg_idx
 
 
+def cache_read_count(record: Dict[str, Any]) -> int:
+    return _safe_nonneg_int(record.get("cache_read_tokens")) or _safe_nonneg_int(record.get("cache_read_input_tokens"))
+
+
+def _load_parse_cursor(value: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not value:
+        return None
+    try:
+        c = json.loads(value)
+        if not (
+            isinstance(c, dict)
+            and isinstance(c["file_id"], list)
+            and isinstance(c["offset"], int)
+            and c["offset"] > 0
+            and isinstance(c["lines"], int)
+            and c["lines"] >= 0
+            and all(isinstance(c[k], str) for k in ("model", "first_ts", "last_ts", "local_date", "sha256"))
+            and (c["epoch"] is None or (isinstance(c["epoch"], (int, float)) and math.isfinite(c["epoch"])))
+            and isinstance(c["counts"], dict)
+            and all(k in MODEL_CATALOG and isinstance(v, int) and v > 0 for k, v in c["counts"].items())
+        ):
+            return None
+        return c
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 class OrionLedger:
     def __init__(
         self,
@@ -503,6 +534,34 @@ class OrionLedger:
                     """
                 )
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_qsnap_epoch ON quota_snapshots(ts_epoch)")
+                columns = {r[1] for r in conn.execute("PRAGMA table_info(session_index)")}
+                if "last_epoch" not in columns:
+                    conn.execute("ALTER TABLE session_index ADD COLUMN last_epoch REAL")
+                    conn.execute("ALTER TABLE session_index ADD COLUMN parse_cursor TEXT")
+                    # The old title could contain prompt text. Rebuild titles and counts from source on next sync.
+                    old_sessions = conn.execute("SELECT conv_id, last_ts FROM session_index").fetchall()
+                    for row in old_sessions:
+                        stamp = _try_parse_iso_epoch(row["last_ts"])
+                        conn.execute(
+                            "UPDATE session_index SET last_epoch=?, mtime_ns=-1, title=substr(conv_id,1,8) WHERE conv_id=?",
+                            (stamp[0] if stamp else None, row["conv_id"]),
+                        )
+                if "file_identity" not in columns:
+                    conn.execute("ALTER TABLE session_index ADD COLUMN file_identity TEXT")
+                # Auto-invalidate cached sessions whose fallback 'gemini-other' steps now match a known model catalog entry (e.g., 4N).
+                reclass_ids = {
+                    str(r["conv_id"])
+                    for r in conn.execute(
+                        "SELECT DISTINCT conv_id, model_raw FROM step_ledger WHERE family_id = 'gemini-other'"
+                    )
+                    if classify_model(str(r["model_raw"] or "")).family_id != "gemini-other"
+                }
+                if reclass_ids:
+                    conn.executemany(
+                        "UPDATE session_index SET mtime_ns = -1, parse_cursor = NULL WHERE conv_id = ?",
+                        [(cid,) for cid in reclass_ids],
+                    )
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_recent_sessions ON session_index(last_epoch DESC, conv_id)")
                 self._compact_poll_spam_in_conn(conn)
 
     @staticmethod
@@ -554,13 +613,25 @@ class OrionLedger:
         """
         with self._sync_lock:
             self._last_sync_mono = time.monotonic()
+        with interprocess_file_lock(self.db_path.with_name(self.db_path.name + ".sync"), timeout=30):
+            return self._sync_transcripts_locked()
+
+    def _sync_transcripts_locked(self) -> int:
         if not self.brain_dir.is_dir() or _has_reparse_or_symlink(self.brain_dir):
             return 0
 
         with self._connect(immediate=False) as conn:
             existing = {
-                str(row["conv_id"]): (int(row["mtime_ns"]), int(row["file_size"]), str(row["title"]))
-                for row in conn.execute("SELECT conv_id, mtime_ns, file_size, title FROM session_index")
+                str(row["conv_id"]): (
+                    int(row["mtime_ns"]),
+                    int(row["file_size"]),
+                    str(row["title"]),
+                    row["parse_cursor"],
+                    row["file_identity"],
+                )
+                for row in conn.execute(
+                    "SELECT conv_id, mtime_ns, file_size, title, parse_cursor, file_identity FROM session_index"
+                )
             }
 
         try:
@@ -570,7 +641,7 @@ class OrionLedger:
 
         seen_conv_ids: Set[str] = set()
         title_updates: List[Tuple[str, str]] = []
-        parsed_convs: List[Tuple[Tuple[Any, ...], List[Tuple[Any, ...]]]] = []
+        parsed_convs: List[Tuple[Tuple[Any, ...], List[Tuple[Any, ...]], bool]] = []
 
         for entry in entries:
             try:
@@ -609,9 +680,10 @@ class OrionLedger:
                 continue
 
             seen_conv_ids.add(conv_id)
-            title = self._cached_title(conv_id)
+            title = self._cached_title(conv_id) or conv_id[:8]
             prev = existing.get(conv_id)
-            if prev and prev[0] == st.st_mtime_ns and prev[1] == st.st_size:
+            file_id = f"{st.st_dev}:{st.st_ino}"
+            if prev and prev[0] == st.st_mtime_ns and prev[1] == st.st_size and prev[4] == file_id:
                 if title and title != prev[2]:
                     title_updates.append((title, conv_id))
                 continue
@@ -622,6 +694,7 @@ class OrionLedger:
                 mtime_ns=st.st_mtime_ns,
                 file_size=st.st_size,
                 title=title,
+                previous_cursor=prev[3] if prev and st.st_size > prev[1] else None,
             )
             if parsed_item is not None:
                 parsed_convs.append(parsed_item)
@@ -638,8 +711,8 @@ class OrionLedger:
                         "UPDATE session_index SET title = ? WHERE conv_id = ?",
                         title_updates,
                     )
-                for session_tuple, step_rows in parsed_convs:
-                    self._upsert_parsed_conversation(conn, session_tuple, step_rows)
+                for parsed in parsed_convs:
+                    self._upsert_parsed_conversation(conn, *parsed)
 
         return len(parsed_convs)
 
@@ -650,7 +723,8 @@ class OrionLedger:
         mtime_ns: int,
         file_size: int,
         title: str,
-    ) -> Optional[Tuple[Tuple[Any, ...], List[Tuple[Any, ...]]]]:
+        previous_cursor: Optional[str] = None,
+    ) -> Optional[Tuple[Tuple[Any, ...], List[Tuple[Any, ...]], bool]]:
         current_model = ""
         first_ts = ""
         last_ts = ""
@@ -659,15 +733,48 @@ class OrionLedger:
         last_valid_epoch: Optional[float] = None
         model_counts: Dict[str, int] = {}
         steps_by_idx: Dict[int, Tuple[Any, ...]] = {}
-        fallback_prompt_title = ""
+        appended = False
+        used_file_time = False
+        line_no = 0
+        complete_line = False
+        digest = hashlib.sha256()
 
         def _reject_nonfinite(tok: str) -> Any:
             raise ValueError(f"Non-finite token in transcript: {tok}")
 
         try:
-            with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
-                for line_no, raw_line in enumerate(f, start=1):
-                    raw_line = raw_line.strip()
+            with open(transcript_path, "rb") as f:
+                source = os.fstat(f.fileno())
+                identity = [source.st_dev, source.st_ino]
+                cursor = _load_parse_cursor(previous_cursor)
+                if cursor:
+                    offset = int(cursor["offset"])
+                    if identity == cursor["file_id"] and 0 < offset < file_size:
+                        # A producer can rewrite any earlier line and grow the file in one update.
+                        # Verify the prefix in bulk before reusing parsed state.
+                        remaining = offset
+                        while remaining:
+                            chunk = f.read(min(1024 * 1024, remaining))
+                            if not chunk:
+                                break
+                            digest.update(chunk)
+                            remaining -= len(chunk)
+                        appended = remaining == 0 and digest.hexdigest() == cursor["sha256"]
+                    if appended:
+                        current_model = cursor["model"]
+                        first_ts, last_ts = cursor["first_ts"], cursor["last_ts"]
+                        last_local_date = cursor["local_date"]
+                        last_valid_epoch = cursor["epoch"]
+                        model_counts = cursor["counts"]
+                        line_no = cursor["lines"]
+                    else:
+                        f.seek(0)
+                        digest = hashlib.sha256()
+                for raw_bytes in f:
+                    line_no += 1
+                    digest.update(raw_bytes)
+                    complete_line = raw_bytes.endswith(b"\n")
+                    raw_line = raw_bytes.decode("utf-8", errors="replace").strip()
                     if not raw_line:
                         continue
                     try:
@@ -693,27 +800,17 @@ class OrionLedger:
                             m_mod = MODEL_SWITCH_RE.search(content)
                             if m_mod:
                                 current_model = m_mod.group(1).strip()
-                            if not fallback_prompt_title:
-                                m_req = re.search(r"<USER_REQUEST>\s*(.+?)\s*</USER_REQUEST>", content, re.DOTALL)
-                                if m_req:
-                                    req_lines = m_req.group(1).strip().splitlines()
-                                    if req_lines:
-                                        fallback_prompt_title = req_lines[0].strip()[:48]
-                                else:
-                                    stripped = re.sub(r"<[^>]+>", " ", content).strip()
-                                    if stripped:
-                                        first_line = stripped.splitlines()[0].strip()
-                                        if first_line:
-                                            fallback_prompt_title = first_line[:48]
 
                         elif step_type == "PLANNER_RESPONSE":
                             in_tok = _safe_nonneg_int(obj.get("input_tokens"))
-                            cache_tok = _safe_nonneg_int(obj.get("cache_read_tokens"))
+                            cache_tok = cache_read_count(obj)
                             out_tok = _safe_nonneg_int(obj.get("output_tokens"))
                             if in_tok == 0 and cache_tok == 0 and out_tok == 0:
                                 continue
 
                             step_idx = _parse_step_index(obj.get("step_index"), fallback_neg_idx=-line_no)
+                            if last_valid_epoch is None:
+                                used_file_time = True
                             fb_epoch = last_valid_epoch if last_valid_epoch is not None else file_mtime_epoch
                             if parsed_ts is not None:
                                 ts_epoch, local_date = parsed_ts
@@ -729,7 +826,6 @@ class OrionLedger:
                             effective_model_raw = step_model or current_model
                             spec = classify_model(effective_model_raw)
                             model_label = effective_model_raw or spec.family_label
-                            model_counts[spec.family_label] = model_counts.get(spec.family_label, 0) + 1
 
                             usd_1x = spec.compute_usd(in_tok, cache_tok, out_tok, multiplier=1.0)
                             usd_intro = spec.compute_usd(
@@ -757,16 +853,15 @@ class OrionLedger:
                             )
                     except Exception:
                         continue
-        except Exception:
+                end = transcript_path.stat()
+                if [end.st_dev, end.st_ino] != identity or end.st_mtime_ns != mtime_ns or f.tell() != file_size:
+                    return None
+        except (OSError, ValueError, KeyError, TypeError):
             return None
 
         rows_to_insert = list(steps_by_idx.values())
-        primary_model = (
-            max(model_counts.items(), key=lambda kv: kv[1])[0]
-            if model_counts
-            else (current_model or "Unknown")
-        )
-        effective_title = title or fallback_prompt_title or conv_id[:8]
+        primary_model = current_model or "Unknown"
+        effective_title = title or conv_id[:8]
         if not last_local_date:
             fb_epoch = last_valid_epoch if last_valid_epoch is not None else file_mtime_epoch
             _, last_local_date = _iso_to_epoch_and_local_date(
@@ -777,6 +872,21 @@ class OrionLedger:
         if not first_ts and rows_to_insert:
             first_ts = str(rows_to_insert[0][2])
 
+        parsed_end = _try_parse_iso_epoch(last_ts)
+        cursor_data = json.dumps(
+            {
+                "offset": file_size if complete_line and not used_file_time else 0,
+                "sha256": digest.hexdigest(),
+                "file_id": identity,
+                "lines": line_no,
+                "model": current_model,
+                "counts": model_counts,
+                "epoch": last_valid_epoch,
+                "first_ts": first_ts,
+                "last_ts": last_ts,
+                "local_date": last_local_date,
+            }
+        )
         session_tuple = (
             conv_id,
             mtime_ns,
@@ -786,17 +896,43 @@ class OrionLedger:
             first_ts,
             last_ts,
             last_local_date,
+            parsed_end[0] if parsed_end else None,
+            cursor_data,
+            f"{source.st_dev}:{source.st_ino}",
         )
-        return session_tuple, rows_to_insert
+        return session_tuple, rows_to_insert, appended
 
     @staticmethod
     def _upsert_parsed_conversation(
         conn: sqlite3.Connection,
         session_tuple: Tuple[Any, ...],
         rows_to_insert: List[Tuple[Any, ...]],
+        appended: bool,
     ) -> None:
         conv_id = str(session_tuple[0])
-        conn.execute("DELETE FROM step_ledger WHERE conv_id = ?", (conv_id,))
+        cursor_state = json.loads(session_tuple[9])
+        counts = cursor_state["counts"]
+        if not appended:
+            conn.execute("DELETE FROM step_ledger WHERE conv_id = ?", (conv_id,))
+        for row in rows_to_insert:
+            if appended:
+                previous = conn.execute(
+                    "SELECT family_id FROM step_ledger WHERE conv_id = ? AND step_index = ?",
+                    (conv_id, row[1]),
+                ).fetchone()
+                if previous:
+                    family = previous[0]
+                    prev_cnt = counts.get(family, 0)
+                    if prev_cnt > 1:
+                        counts[family] = prev_cnt - 1
+                    else:
+                        counts.pop(family, None)
+            family = row[6]
+            counts[family] = counts.get(family, 0) + 1
+        if counts:
+            winner = min(counts, key=lambda family: (-counts[family], family))
+            session_tuple = (*session_tuple[:4], MODEL_CATALOG[winner].family_label, *session_tuple[5:])
+        session_tuple = (*session_tuple[:9], json.dumps(cursor_state), *session_tuple[10:])
         if rows_to_insert:
             conn.executemany(
                 """
@@ -813,8 +949,9 @@ class OrionLedger:
         conn.execute(
             """
             INSERT INTO session_index (
-                conv_id, mtime_ns, file_size, title, primary_model, first_ts, last_ts, local_date
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                conv_id, mtime_ns, file_size, title, primary_model, first_ts, last_ts, local_date,
+                last_epoch, parse_cursor, file_identity
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(conv_id) DO UPDATE SET
                 mtime_ns = excluded.mtime_ns,
                 file_size = excluded.file_size,
@@ -822,7 +959,10 @@ class OrionLedger:
                 primary_model = excluded.primary_model,
                 first_ts = excluded.first_ts,
                 last_ts = excluded.last_ts,
-                local_date = excluded.local_date
+                local_date = excluded.local_date,
+                last_epoch = excluded.last_epoch,
+                parse_cursor = excluded.parse_cursor,
+                file_identity = excluded.file_identity
             """,
             session_tuple,
         )
@@ -844,7 +984,7 @@ class OrionLedger:
             title=title,
         )
         if parsed is not None:
-            self._upsert_parsed_conversation(conn, parsed[0], parsed[1])
+            self._upsert_parsed_conversation(conn, *parsed)
 
     def get_daily_summary(self, days: int = 14) -> List[DailyUsageRow]:
         self._ensure_synced()
@@ -952,12 +1092,15 @@ class OrionLedger:
                     COALESCE(SUM(l.output_tokens), 0) AS out_tok,
                     COALESCE(SUM(l.usd_1x), 0.0) AS u1,
                     COALESCE(SUM(l.usd_agy_est), 0.0) AS uagy
-                FROM session_index s
-                LEFT JOIN step_ledger l ON s.conv_id = l.conv_id
+                FROM (
+                    SELECT si.* FROM session_index si
+                    WHERE EXISTS (SELECT 1 FROM step_ledger x WHERE x.conv_id = si.conv_id)
+                    ORDER BY si.last_epoch DESC, si.conv_id
+                    LIMIT ?
+                ) s
+                JOIN step_ledger l ON s.conv_id = l.conv_id
                 GROUP BY s.conv_id
-                HAVING steps > 0
-                ORDER BY s.last_ts DESC
-                LIMIT ?
+                ORDER BY s.last_epoch DESC, s.conv_id
                 """,
                 (_clamp_int(limit, 1, MAX_SESSION_LIMIT, 15),),
             ).fetchall()
@@ -1215,7 +1358,7 @@ class OrionLedger:
             ).fetchone()
             audit.total_snapshots = int(total_row["c"] or 0)
             if audit.total_snapshots == 0:
-                audit.verdict = "已建立高精度配额快照表（当前为首笔基线，后续对话将自动比对实测扣费斜率与幽灵掉点）。"
+                audit.verdict = "已建立高精度配额快照表（当前为首笔基线，后续对话将自动比对实测扣费斜率与本机无匹配步骤的配额变化）。"
                 return audit
 
             # Bounded audit window, single pass, zero per-pair SQL; anchored at newest non-future snapshot.
@@ -1384,7 +1527,8 @@ class OrionLedger:
                         to_event=str(curr["event_type"]),
                         gemini_5h_drop_pct=g5_drop if gem_phantom else 0.0,
                         gemini_weekly_drop_pct=gw_drop if gem_phantom else 0.0,
-                        p3_weekly_drop_pct=(pw_drop if pw_drop > 0 else p5_drop) if p3_phantom else 0.0,
+                        p3_weekly_drop_pct=pw_drop if p3_phantom else 0.0,
+                        p3_5h_drop_pct=p5_drop if p3_phantom else 0.0,
                     )
                 )
             elif steps > 0 and u1 > 0.01 and (g5_drop >= 0.05 or gw_drop >= 0.02):
@@ -1421,11 +1565,9 @@ class OrionLedger:
         audit.phantom_drains = audit.phantom_drains[-10:]
 
         if pool_5h_estimates:
-            s5 = sorted(pool_5h_estimates)
-            audit.median_5h_pool_usd_at_1x = s5[len(s5) // 2]
+            audit.median_5h_pool_usd_at_1x = median(pool_5h_estimates)
         if pool_wk_estimates:
-            sw = sorted(pool_wk_estimates)
-            audit.median_weekly_pool_usd_at_1x = sw[len(sw) // 2]
+            audit.median_weekly_pool_usd_at_1x = median(pool_wk_estimates)
 
         if audit.median_5h_pool_usd_at_1x is not None:
             wk_extra = (
@@ -1435,7 +1577,7 @@ class OrionLedger:
             )
             audit.verdict = (
                 f"按 1.0x 官方标准价折算，当前 5h 池实测等效总容量约为 ${audit.median_5h_pool_usd_at_1x:.2f}{wk_extra} "
-                f"（若谷歌将 4A/4C 的 1.5x 惩罚回调至 1.0x，该实测值将直接跳升 +50%）。"
+                f"（4A/4C 的 1.5x 为预设估算倍率；配额变化可能包含其他设备的用量）。"
             )
         elif audit.median_weekly_pool_usd_at_1x is not None:
             audit.verdict = (

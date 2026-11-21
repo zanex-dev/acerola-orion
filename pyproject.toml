@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "acerola-orion"
-version = "1.3.0"
-description = "7-Decimal Live Quota Telemetry, Passive KV Cache TTL Radar, Local Privacy-Isolated Token Ledger / Rate-Card Auditor (Orion), and Zero-Polling Win32 Kernel Process Guillotine (Acerola) for Google Antigravity."
+version = "1.4.0"
+description = "7-Decimal Live Quota Telemetry, Passive KV Cache TTL Radar & 200K 2x Tier Alert, Append-Only Conversation Vault, Local Privacy-Isolated Token Ledger (Orion), and Win32 Kernel Handle Process Guard (Acerola) for Google Antigravity."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
@@ -20,7 +20,8 @@ keywords = [
     "telemetry",
     "token-ledger",
     "quota-monitor",
-    "process-guard"
+    "process-guard",
+    "conversation-vault"
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",

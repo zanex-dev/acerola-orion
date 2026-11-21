@@ -6,18 +6,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 import contextlib
 import itertools
+import json
 import os
 from pathlib import Path
+import re
 import threading
 import time
-from typing import Dict, Iterator, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 APP_NAME = "acerola-orion"
 APP_CODENAME = "Acerola-Orion (雅赛劳拉莉昂)"
 APP_TRINITY = "Kiss-Shot · Acerola-Orion · Heart-Under-Blade"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 
 _ATOMIC_TMP_SEQ = itertools.count(1)
 
@@ -147,6 +150,10 @@ def get_data_dir() -> Path:
     return p
 
 
+def get_config_path() -> Path:
+    return get_data_dir() / "config.json"
+
+
 def get_ledger_db_path() -> Path:
     return get_data_dir() / "ledger.db"
 
@@ -155,12 +162,30 @@ def get_guillotine_log_path() -> Path:
     return get_data_dir() / "guillotine.log"
 
 
+def get_vault_dir() -> Path:
+    p = get_data_dir() / "chat_vault"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def get_vault_index_db_path() -> Path:
+    return get_vault_dir() / "vault_index.db"
+
+
 def get_agy_home() -> Path:
     return Path.home() / ".gemini" / "antigravity"
 
 
 def get_agy_daemon_dir() -> Path:
     return get_agy_home() / "daemon"
+
+
+def get_agy_conversations_dir() -> Path:
+    return get_agy_home() / "conversations"
+
+
+def get_agy_summaries_db_path() -> Path:
+    return get_agy_home() / "conversation_summaries.db"
 
 
 def get_agy_brain_dir() -> Path:
@@ -203,7 +228,7 @@ class ModelRateSpec:
     output_per_m: float
     # Promised promotional multiplier vs Official 1.0x (e.g., 0.5x promotional rate on 4A/4C)
     promised_multiplier: float = 1.0
-    # Observed Antigravity internal rate-card weight vs 1.0x
+    # User-visible preset estimate only; this is not a provider billing record.
     suspected_agy_multiplier: float = 1.0
 
     def compute_usd(
@@ -231,6 +256,16 @@ MODEL_CATALOG: Dict[str, ModelRateSpec] = {
         output_per_m=20.00,
         promised_multiplier=0.5,
         suspected_agy_multiplier=1.5,
+    ),
+    "4n": ModelRateSpec(
+        family_id="4n",
+        family_label="Gemini 4 Neon (4N)",
+        quota_group="gemini",
+        input_per_m=3.00,
+        cache_per_m=0.15,
+        output_per_m=15.00,
+        promised_multiplier=1.0,
+        suspected_agy_multiplier=1.0,
     ),
     "4a": ModelRateSpec(
         family_id="4a",
@@ -311,6 +346,8 @@ def classify_model(raw_model: str | None) -> ModelRateSpec:
     s = raw_model.strip().lower()
     if "carbon" in s or s.startswith("4c"):
         return MODEL_CATALOG["4c"]
+    if "neon" in s or s.startswith("4n"):
+        return MODEL_CATALOG["4n"]
     if "argon" in s or s.startswith("4a"):
         return MODEL_CATALOG["4a"]
     if "hydrogen" in s or s.startswith("4h"):
@@ -324,3 +361,132 @@ def classify_model(raw_model: str | None) -> ModelRateSpec:
     if "gpt" in s:
         return MODEL_CATALOG["gpt-oss"]
     return MODEL_CATALOG["gemini-other"]
+
+
+_CFG_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
+
+
+def _salvage_json_dict(text: str) -> Optional[Dict[str, Any]]:
+    try:
+        obj = json.loads(_CFG_TRAILING_COMMA_RE.sub(r"\1", text))
+    except Exception:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _read_config_file_state(path: Path) -> Tuple[Optional[Dict[str, Any]], Optional[bytes]]:
+    raw: Optional[bytes] = None
+    for attempt in range(20):
+        if not path.exists():
+            return {}, None
+        try:
+            raw = path.read_bytes()
+            break
+        except PermissionError:
+            time.sleep(min(0.01, 0.001 * (attempt + 1)))
+        except OSError as e:
+            if getattr(e, "winerror", 0) in (5, 32):
+                time.sleep(min(0.01, 0.001 * (attempt + 1)))
+            else:
+                raise
+    if raw is None:
+        raise OSError(f"config.json 持续不可读，拒绝以默认值覆盖：{path}")
+    text = raw.decode("utf-8-sig", errors="replace")
+    if not text.strip():
+        return {}, None
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            return obj, None
+    except Exception:
+        pass
+    return _salvage_json_dict(text), raw
+
+
+def load_vault_config() -> Dict[str, Any]:
+    """Read `config.json` safely and return normalized vault configuration keys."""
+    p = get_config_path()
+    try:
+        obj, _corrupt = _read_config_file_state(p)
+    except OSError:
+        obj = None
+    cfg: Dict[str, Any] = dict(obj) if isinstance(obj, dict) else {}
+    if not isinstance(cfg.get("vault_auto_backup"), bool):
+        cfg["vault_auto_backup"] = bool(cfg.get("vault_auto_backup", True))
+    return cfg
+
+
+def _update_vault_config(mutator: Callable[[Dict[str, Any]], None]) -> Dict[str, Any]:
+    p = get_config_path()
+    with interprocess_file_lock(p):
+        obj, corrupt_raw = _read_config_file_state(p)
+        if corrupt_raw is not None:
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            backup = p.with_name(f"{p.name}.corrupt-{stamp}.bak")
+            n = 1
+            while backup.exists():
+                backup = p.with_name(f"{p.name}.corrupt-{stamp}-{n}.bak")
+                n += 1
+            backup.write_bytes(corrupt_raw)
+        cfg: Dict[str, Any] = dict(obj) if isinstance(obj, dict) else {}
+        if not isinstance(cfg.get("vault_auto_backup"), bool):
+            cfg["vault_auto_backup"] = bool(cfg.get("vault_auto_backup", True))
+        mutator(cfg)
+        atomic_write_text(p, json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        return cfg
+
+
+def is_vault_auto_backup_enabled() -> bool:
+    """Return whether automatic conversation backup (Orion-Vault) is enabled in config.json."""
+    return bool(load_vault_config().get("vault_auto_backup", True))
+
+
+def configure_vault_auto_backup(action: str = "status") -> Dict[str, Any]:
+    """
+    Controllable master switch for Orion-Vault automatic conversation backup.
+    Supported actions: 'status' | 'on' | 'enable' | 'off' | 'disable' | 'toggle'.
+    Takes effect immediately across Stop hooks and background Guillotine sweeps.
+    """
+    act = str(action or "status").strip().lower()
+    if act == "status":
+        cur = is_vault_auto_backup_enabled()
+        state_lbl = "已开启 (ON)" if cur else "已关闭 (OFF)"
+        return {
+            "ok": True,
+            "enabled": cur,
+            "changed": False,
+            "message": f"对话自动备份开关当前状态: {state_lbl}",
+        }
+    if act not in ("on", "enable", "off", "disable", "toggle"):
+        return {
+            "ok": False,
+            "enabled": is_vault_auto_backup_enabled(),
+            "changed": False,
+            "message": f"未知开关动作: {action!r} (可选: status | on | off | toggle)",
+        }
+
+    prev_holder: List[bool] = [True]
+
+    def _mutate(c: Dict[str, Any]) -> None:
+        prev = bool(c.get("vault_auto_backup", True))
+        prev_holder[0] = prev
+        if act in ("on", "enable"):
+            c["vault_auto_backup"] = True
+        elif act in ("off", "disable"):
+            c["vault_auto_backup"] = False
+        else:
+            c["vault_auto_backup"] = not prev
+
+    updated = _update_vault_config(_mutate)
+    now_enabled = bool(updated.get("vault_auto_backup", True))
+    changed = now_enabled != prev_holder[0]
+    if now_enabled:
+        msg = "🟢 已开启对话自动备份 (Orion-Vault)：每轮对话结束与后台巡检将自动增量留档，误删可一键恢复。"
+    else:
+        msg = "⚪ 已关闭对话自动备份 (Orion-Vault)：实时 Hook 与后台巡检已暂停自动归档（已有历史备份完整保留）。"
+    return {
+        "ok": True,
+        "enabled": now_enabled,
+        "changed": changed,
+        "message": msg,
+    }

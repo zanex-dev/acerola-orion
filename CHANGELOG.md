@@ -6,6 +6,32 @@ All notable changes to **`acerola-orion`** will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-11-21 — Orion-Vault Time-Vault, Gemini 4 Neon, 200K 2x Pricing Alert & Security Audit Hardening
+
+### Added
+- **Orion-Vault Append-Only Conversation Backup & Recovery (`acerola_orion/vault.py`, `vault_hook.py`, `guillotine.py`, `panel.py`, `cli_render.py`, `__main__.py`)**:
+  - Added local-only append-only backup of `conversations/<uuid>.db` (SQLite Online Backup + gzip `conversation.db.gz`), `conversation_summaries.db` rows (`raw_summary` Protobuf preserved), `annotations/<uuid>.pbtxt`, and text/SVG artifacts under `brain/<uuid>/` with deletion interception (`deleted` status), one-click restoration (`vault restore`), and Markdown export (`vault export`).
+  - Added controllable `vault_auto_backup` toggle (`config.json` with cross-process file lock & atomic write) accessible from CLI (`vault status|sync|on|off|toggle|list|search|show|restore|export|hook-stop`), the new 4th Full Mode desktop tab (`🗄️ 对话防删保险箱`), system tray menu, and the guard daemon background incremental sweep thread; added 5 Vault launcher scripts (11 total).
+  - Enforced strict media-privacy isolation (skipping `.user_uploaded`, `browser_sandbox`, `tempmediaStorage`, `.allow_media`, and bitmap/audio/video binaries) plus symlink/reparse-point traversal blocking (`_is_reparse_or_link`).
+- **Gemini 4 Neon (`4N`) Support & 200K 2x Pricing Tier Early Warning (`constants.py`, `ledger.py`, `cache_radar.py`, `panel.py`)**:
+  - Added `Gemini 4 Neon (4N)` rate-card classification with automatic ledger cache invalidation when reclassified models appear.
+  - Added `180K` approaching and `200K` active 2x double-billing context tier alerts (`COMPACT_COMMAND_TEXT = "/compact"`) with one-click clipboard copy across CLI `radar`, main panel, floating capsule HUD, and system tray menu.
+
+### Security & Reliability Hardening (A01–A18 Audit Baseline)
+- **Owned-Handle Process Guard & Non-Destructive Lifecycle (`rpc.py`, `guillotine.py`, `__main__.py`)**:
+  - Upgraded orphan `language_server*.exe` termination to `open_owned_language_server` / `terminate_owned_handle` with `advapi32` same-user SID fail-closed verification, install-directory/UI-ancestor/hub ownership checks, and `finally` handle cleanup (A10).
+  - Converted `retire-legacy` into a non-destructive read-only inspection helper, eliminated blind PID kills in `stop_guard_daemon`, and aligned `uninstall_guard_autostart` / `guard` CLI exit codes with real status (A18).
+- **Proxy Credential Stripping (`telemetry.py`)**:
+  - Upgraded `_inspect_proxy_mode()` to parse proxy env vars via `urllib.parse.urlsplit`, stripping userinfo, query, and fragment to preserve only `scheme://host[:port]` (A13).
+- **Ledger & Cache Radar Integrity (`ledger.py`, `cache_radar.py`)**:
+  - Added `cache_read_input_tokens` compatibility (A01), removed stale missing-file negative caching in `CacheRadarSampler` (A02), hardened incremental transcript parsing with cross-process file locks, SHA-256 prefix verification, corrupt-cursor fallback, and same-step model-switch replacement (A04).
+  - Added dedicated `p3_5h_drop_pct` field (A05), even-count `statistics.median` aggregation (A06), numeric `last_epoch` sorting with legacy DB migration (A07), Top-N `EXISTS` query pre-filtering (A08), and prompt-leakage prevention falling back to `conv_id[:8]` with legacy title scrubbing (A15).
+- **UI Timer Lifecycle & Accurate Copy Alignment (`panel.py`, `win_tray.py`, `cli_render.py`, `README*`)**:
+  - Canceled `_auto_refresh_id` on tray hide/close so repeated hides/restores never stack refresh timers (A03).
+  - Aligned ledger/audit wording to state `1.5x` as local preset estimates and removed unmeasured `0.00% CPU` / `<1ms` latency claims (A16 / A17).
+- **Verification & Static Clean-Room Audit (`tests/test_public_suite.py`, `.github/workflows/ci.yml`)**:
+  - Expanded automated verification suite to **`20/20` passing tests**, covering A01–A18 regressions, Gemini 4 Neon, 200K 2x pricing alerts, and Orion-Vault end-to-end flows while extending `test_01` static zero-egress/clean-room scanning to `vault.py`, `vault_hook.py`, and release documentation.
+
 ## [1.3.0] - 2026-11-17 — Passive Prompt KV Cache Radar, Timer Disambiguation & High-DPI UI Anti-Truncation
 
 ### Added & Hardened

@@ -5,7 +5,7 @@
 - SetCurrentProcessExplicitAppUserModelID + COM IPropertyStore (PKEY_AppUserModel_ID) 原生开始菜单/任务栏独立身份绑定
 - LoadImageW 多尺寸高清 .ico 注入 + Explorer 重启 (TaskbarCreated) 自动重挂
 - AllowSetForegroundWindow + 跨进程 PostMessageW 单实例唤醒（支持托盘隐藏态无缝唤起）
-- 独立 Win32 消息泵守护线程 + 线程安全回调派发（0% 待机 CPU，非 Windows 平台自动安全降级）
+- 独立 Win32 消息泵守护线程 + 线程安全回调派发（非 Windows 平台自动安全降级）
 """
 
 from __future__ import annotations

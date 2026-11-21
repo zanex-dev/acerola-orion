@@ -6,6 +6,32 @@
 
 日志格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本 2.0.0 (SemVer)](https://semver.org/lang/zh-CN/)。
 
+## [1.4.0] - 2026-11-21 — Orion-Vault 对话时光保险箱、Gemini 4 Neon、200K 双倍预警与安全审计加固
+
+### 新增功能
+- **Orion-Vault 只增不删对话自动增量备份与误删恢复（`acerola_orion/vault.py`、`vault_hook.py`、`guillotine.py`、`panel.py`、`cli_render.py`、`__main__.py`）**：
+  - 新增纯本地只增不删备份引擎：通过 SQLite Online Backup + gzip 热备 `conversations/<uuid>.db`（`conversation.db.gz`），完整留存 `conversation_summaries.db`（含 `raw_summary`）、`annotations/<uuid>.pbtxt` 与 `brain/<uuid>/` 纯文本/SVG Artifacts；拦截客户端删除操作并自动标记为 `deleted`，支持一键原位恢复（`vault restore`）与 Markdown 导出（`vault export`）。
+  - 新增可控 `vault_auto_backup` 开关（跨进程文件锁 + 原子写入 `config.json`），打通 CLI 全套子命令（`vault status|sync|on|off|toggle|list|search|show|restore|export|hook-stop`）、主控台第 4 页签「🗄️ 对话防删保险箱」、系统托盘开关与守卫后台增量巡检线程，并在 `install-launchers` 新增 5 个 Vault 启动脚本（共 11 个）。
+  - 严格执行媒体隐私隔离（跳过 `.user_uploaded`、`browser_sandbox`、`tempmediaStorage`、`.allow_media` 与全部位图/音视频文件）并加装 `_is_reparse_or_link` 阻止符号链接与 NTFS 重解析点穿越。
+- **Gemini 4 Neon (`4N`) 支持与 200K 双倍计价（2x）预警（`constants.py`、`ledger.py`、`cache_radar.py`、`panel.py`）**：
+  - 新增 `Gemini 4 Neon (4N)` 费率目录分类及旧账本缓存自动失效重算机制。
+  - 在 CLI `radar`、星盘主面板、悬浮胶囊 HUD 与托盘右键菜单同步加入 `180K` 临近预警、`≥200K` 双倍计价（2x）告警及 `/compact` 一键复制到剪贴板。
+
+### 安全审计与稳定性加固（A01–A18 公开版基线）
+- **归属句柄精确进程清理与非破坏性生命周期（`rpc.py`、`guillotine.py`、`__main__.py`）**：
+  - 引入 `open_owned_language_server` / `terminate_owned_handle`，通过 `advapi32` 同用户 SID fail-closed 校验、安装目录、UI 祖先与自有 hub 归属确认后再终止受控进程，并在 `finally` 严格释放句柄（A10）。
+  - `retire-legacy` 改为非破坏性只读提示，`stop_guard_daemon` 移除未验证 PID 盲杀，`uninstall_guard_autostart` 与 `guard` CLI 返回真实状态码（A18）。
+- **代理环境变量凭证剥离（`telemetry.py`）**：
+  - `_inspect_proxy_mode()` 升级为 `urllib.parse.urlsplit` 解析，彻底剥离 `userinfo`、query 与 fragment，仅保留合法 `scheme://host[:port]`（A13）。
+- **账本与缓存雷达数据完整性（`ledger.py`、`cache_radar.py`）**：
+  - 兼容 `cache_read_input_tokens` 统计（A01）；移除缓存雷达缺失文件负缓存以即时发现晚创建日志（A02）；账本增量解析加入跨进程文件锁、SHA-256 增量前缀校验、坏游标回退重建与同 step 模型切换替换计票（A04）。
+  - 新增独立 `p3_5h_drop_pct` 字段（A05）、偶数样本 `statistics.median` 均值中位数（A06）、数值 `last_epoch` 排序与旧库迁移（A07）、Top-N `EXISTS` 预筛选（A08）以及无注释标题回退 `conv_id[:8]` + 旧库标题清洗防 Prompt 泄漏（A15）。
+- **UI 定时器防泄漏与诚实准确文案对齐（`panel.py`、`win_tray.py`、`cli_render.py`、`README*`）**：
+  - 隐藏至托盘或关闭窗口时显式取消 `_auto_refresh_id`，杜绝反复隐藏/唤醒导致的定时器堆叠（A03）。
+  - 全仓代码与文档统一将 `1.5x` 明确标注为本地预设倍率估算，并移除无实测依据的 `0.00% CPU` / `<1ms` 承诺文案（A16 / A17）。
+- **测试与静态清白自审扩充（`tests/test_public_suite.py`、`.github/workflows/ci.yml`）**：
+  - 自动化安全与回归测试套件扩充至 **`20/20` 项全绿**，覆盖 A01–A18 回归、Gemini 4 Neon、200K 2x 预警与 Orion-Vault 全链路，并将 `test_01` 静态零外联/白帽清白审计覆盖至 `vault.py`、`vault_hook.py` 及全部发布文档。
+
 ## [1.3.0] - 2026-11-17 — 被动式 Prompt KV 缓存余温雷达、配额计时消歧与高分屏 UI 防截断加固
 
 ### 新增与优化

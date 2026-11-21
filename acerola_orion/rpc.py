@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Orion-RPC 底层通信与无锁系统探针 (acerola_orion/rpc.py)
-- 原生 64-bit 安全 Win32 CreateToolhelp32Snapshot 亚毫秒级进程快照与祖先链死锁免疫推导
+- 原生 64-bit 安全 Win32 CreateToolhelp32Snapshot 进程快照与祖先链死锁免疫推导
 - Win32 CreateFileW (FILE_SHARE_READ | WRITE | DELETE) 穿透读取被 Electron 锁定的 0 字节日志
 - daemon/hub_*.json 存活 PID 校验端口发现与本地 Connect-RPC JSON 客户端
 """
@@ -237,6 +237,96 @@ def query_process_image_path_win32(pid: int) -> str:
         close_handle_safe(h)
 
 
+def _handle_image(handle: int) -> Optional[Path]:
+    if _KERNEL32 is None or not handle:
+        return None
+    size = wintypes.DWORD(32768)
+    buf = ctypes.create_unicode_buffer(size.value)
+    if _KERNEL32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+        return Path(buf.value)
+    return None
+
+
+def _same_user(handle: int) -> bool:
+    """Compare process-token user SIDs. Unavailable token information fails closed."""
+    if sys.platform != "win32" or _KERNEL32 is None or not handle:
+        return False
+    adv = ctypes.WinDLL("advapi32", use_last_error=True)
+    adv.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    adv.OpenProcessToken.restype = wintypes.BOOL
+    adv.GetTokenInformation.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    adv.GetTokenInformation.restype = wintypes.BOOL
+    adv.EqualSid.argtypes = [wintypes.LPVOID, wintypes.LPVOID]
+    adv.EqualSid.restype = wintypes.BOOL
+    buffers = []
+    current_process = wintypes.HANDLE(-1)
+    for process in (current_process, handle):
+        token = wintypes.HANDLE()
+        if not adv.OpenProcessToken(process, 0x0008, ctypes.byref(token)):  # TOKEN_QUERY
+            return False
+        try:
+            length = wintypes.DWORD()
+            adv.GetTokenInformation(token, 1, None, 0, ctypes.byref(length))
+            if not length.value:
+                return False
+            buf = ctypes.create_string_buffer(length.value)
+            if not adv.GetTokenInformation(token, 1, buf, length, ctypes.byref(length)):
+                return False
+            buffers.append(buf)
+        finally:
+            close_handle_safe(token.value)
+    return bool(adv.EqualSid(*(ctypes.c_void_p.from_buffer(b).value for b in buffers)))
+
+
+def open_owned_language_server(pid: int, entries: Optional[List[RawProcEntry]] = None) -> Optional[int]:
+    """Pin a live LS object while its UI ancestry, install path, user and own hub can be verified."""
+    handle = open_process_handle(pid, PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE)
+    if not handle:
+        return None
+    owned = False
+    try:
+        image = _handle_image(handle)
+        if not image or not image.name.lower().startswith("language_server") or image.suffix.lower() != ".exe":
+            return None
+        if not _same_user(handle):
+            return None
+        hub = discover_hub_endpoint(pid)
+        if hub is None or hub.pid != pid or not hub.csrf_token:
+            return None
+        procs = entries if entries is not None else snapshot_processes_fast()
+        roots = set(find_antigravity_process_tree(procs)["main_pids"])
+        parents = {p.pid: p.ppid for p in procs}
+        seen = {pid}
+        ancestor = parents.get(pid)
+        while ancestor and ancestor not in seen:
+            if ancestor in roots:
+                root_path = query_process_image_path_win32(ancestor)
+                if root_path:
+                    root = Path(root_path).resolve()
+                    if root.name.lower() == "antigravity.exe" and image.resolve().is_relative_to(root.parent):
+                        owned = True
+                        return handle
+                break
+            seen.add(ancestor)
+            ancestor = parents.get(ancestor)
+        return None
+    except (OSError, ValueError):
+        return None
+    finally:
+        if not owned:
+            close_handle_safe(handle)
+
+
+def terminate_owned_handle(handle: int) -> bool:
+    return bool(_KERNEL32 and handle and _KERNEL32.TerminateProcess(handle, 1))
+
+
 def terminate_pid_win32(
     pid: int,
     exit_code: int = 1,
@@ -349,7 +439,7 @@ class ActiveLsState:
 
 
 def snapshot_processes_fast() -> List[RawProcEntry]:
-    """Sub-millisecond native Win32 process table enumeration with zero subprocess spawns."""
+    """Native Win32 process table enumeration with zero subprocess spawns."""
     if _KERNEL32 is None:
         return []
     h_snap = _KERNEL32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
@@ -661,7 +751,7 @@ def discover_hub_endpoint(
                 csrf_token=str(raw.get("csrfToken") or ""),
                 total_hub_files=total,
             )
-            if target_pid > 0 and ep.pid == target_pid and ep.http_port > 0:
+            if target_pid > 0 and ep.pid == target_pid and ep.http_port > 0 and ep.csrf_token:
                 return ep
             if ep.http_port > 0 and ep.csrf_token:
                 if live_pids is None or ep.pid in live_pids:
@@ -718,6 +808,8 @@ def inspect_active_ls(
         hub = discover_hub_endpoint(chosen.pid, daemon_dir=daemon_dir, live_pids=live_ls_pids)
         if hub is None:
             hub = discover_hub_endpoint(0, daemon_dir=daemon_dir, live_pids=live_ls_pids)
+            if hub is not None:
+                chosen = next((p for p in ls_entries if p.pid == hub.pid), chosen)
 
     cmdline = _query_process_cmdline_wmi(chosen.pid, live_pids=live_all_pids) if include_cmdline else ""
     flags = parse_ls_cmdline(cmdline)

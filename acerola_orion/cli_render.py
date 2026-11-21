@@ -6,11 +6,12 @@ Acerola-Orion 终端高可读仪表盘渲染器 (acerola_orion/cli_render.py)
 from __future__ import annotations
 
 import math
-from typing import List
+from typing import List, Optional
 
 from .constants import APP_CODENAME, APP_TRINITY, APP_VERSION
 from .ledger import DailyUsageRow, ModelUsageRow, RateAuditReport, SessionUsageRow
 from .telemetry import OrionTelemetryReport
+from .vault import VaultSearchHit, VaultSessionItem, VaultStatusReport, _fmt_cn_time
 
 
 def _bar(fraction: float, width: int = 22) -> str:
@@ -25,7 +26,10 @@ def _bar(fraction: float, width: int = 22) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
-def render_telemetry_report(r: OrionTelemetryReport) -> str:
+def render_telemetry_report(
+    r: OrionTelemetryReport,
+    vault_status: Optional[VaultStatusReport] = None,
+) -> str:
     lines: List[str] = []
     lines.append("═" * 74)
     lines.append(f"  ✦ {APP_CODENAME} v{APP_VERSION}  |  {APP_TRINITY}")
@@ -77,13 +81,19 @@ def render_telemetry_report(r: OrionTelemetryReport) -> str:
     )
 
     g = r.guard
-    lines.append("\n【4】 ⚔️ Acerola · 零轮询内核断头台守卫状态 (Guillotine Process Guard)")
-    g_state = "🟢 运行中 (0% CPU 内核句柄监听 · 关窗毫秒级即斩)" if g.mutex_active else "⚪ 未运行"
+    lines.append("\n【4】 ⚔️ Acerola · 内核句柄断头台守卫与保险箱状态 (Guillotine Guard & Vault)")
+    g_state = "🟢 运行中 (内核句柄监听与周期复查)" if g.mutex_active else "⚪ 未运行"
     auto_state = "已开启开机自启" if g.scheduled_task_installed else "未注册自启"
     lines.append(f"  ● 孤儿进程守卫   : {g_state} [{auto_state}]")
+    if vault_status is not None:
+        sw_tag = "🟢 已开启 (实时防删留档)" if vault_status.auto_backup_enabled else "⚪ 已关闭 (手动模式)"
+        lines.append(
+            f"  ● 对话防删保险箱 : {sw_tag} | 已保护 {vault_status.total_conversations} 个会话 "
+            f"(🗑️已删可恢复={vault_status.deleted_conversations} 个, 体积={vault_status.total_vault_mb:.2f} MB)"
+        )
     if g.legacy_buggy_killer_active:
         lines.append(
-            f"  ● ⚠️ 遗留脚本告警: 检测到旧版轮询脚本 ag_kill_orphan 仍在运行 (PID={g.legacy_pids})，建议执行 `acerola-orion guard install` 清理替换！"
+            f"  ● ⚠️ 遗留脚本告警: 检测到旧版轮询脚本 ag_kill_orphan 仍在运行 (PID={g.legacy_pids})，建议手动停用并删除旧计划任务。"
         )
 
     if r.rpc_errors:
@@ -102,12 +112,12 @@ def render_ledger_report(
 ) -> str:
     lines: List[str] = []
     lines.append("═" * 82)
-    lines.append(f"  ✦ Orion-Ledger · 本地 Token 明细账本与黑盒电子秤验钞报告 (近 {days} 天)")
+    lines.append(f"  ✦ Orion-Ledger · 本地 Token 用量与配额快照分析 (近 {days} 天)")
     lines.append("═" * 82)
 
-    lines.append("\n【A】 📅 每日 Token 消耗与等效 API 账单明细 (GPT-Style Daily Token Table)")
+    lines.append("\n【A】 📅 每日 Token 用量与预设价格估算")
     lines.append(
-        f"  {'日期':<12} {'会话':>4} {'步数':>5} {'新鲜Input':>12} {'缓存读取Cache':>14} {'输出Output':>11} {'1.0x原价':>9} {'0.5x首发价':>10} {'1.5x暗扣估':>10}"
+        f"  {'日期':<12} {'会话':>4} {'步数':>5} {'新鲜Input':>12} {'缓存读取Cache':>14} {'输出Output':>11} {'1.0x估算':>9} {'0.5x估算':>10} {'1.5x预设倍率估':>10}"
     )
     lines.append("  " + "─" * 78)
     tot_in = tot_ca = tot_out = 0
@@ -136,7 +146,7 @@ def render_ledger_report(
 
     lines.append(f"\n【B】 🧠 近 {days} 天按模型家族拆分消耗与倍率审计 (Model Family Breakdown)")
     lines.append(
-        f"  {'模型家族':<24} {'池':<6} {'步数':>5} {'Input+Cache':>14} {'Output':>10} {'1.0x原价':>9} {'AGY估算权重':>10}  {'倍率状态'}"
+        f"  {'模型家族':<24} {'池':<6} {'步数':>5} {'Input+Cache':>14} {'Output':>10} {'1.0x估算':>9} {'AGY估算权重':>10}  {'倍率状态'}"
     )
     lines.append("  " + "─" * 78)
     for m in models:
@@ -146,30 +156,32 @@ def render_ledger_report(
             f"${m.usd_1x:>8.2f} ${m.usd_agy_est:>9.2f}  {m.multiplier_note}"
         )
 
-    lines.append("\n【C】 💬 最近活跃会话账单 Top 8 (Recent Sessions)")
+    lines.append("\n【C】 💬 最近活跃会话用量 Top 8 (Recent Sessions)")
     for s in sessions[:8]:
         short_title = s.title if len(s.title) <= 30 else s.title[:29] + "…"
         lines.append(
             f"  • [{s.local_date}] {short_title:<30} | {s.primary_model:<22} | "
-            f"步={s.steps:<3} Out={s.output_tokens:>7,} | 1x=${s.usd_1x:>5.2f} (暗扣估=${s.usd_agy_est:>5.2f})"
+            f"步={s.steps:<3} Out={s.output_tokens:>7,} | 1x=${s.usd_1x:>5.2f} (预设倍率估=${s.usd_agy_est:>5.2f})"
         )
 
-    lines.append("\n【D】 🔍 黑盒进度条电子秤验钞机 (Quota Watermark & Phantom Drain Auditor)")
+    lines.append("\n【D】 🔍 配额快照与本机步骤比对")
     lines.append(f"  ● 历史水位快照数 : {audit.total_snapshots} 笔 (最新: {audit.latest_snapshot_ts or '刚刚'})")
-    lines.append(f"  ● 验钞结论       : {audit.verdict}")
+    lines.append(f"  ● 快照分析       : {audit.verdict}")
     if audit.phantom_drains:
-        lines.append(f"  ● ⚠️ 捕获无对话幽灵掉点事件 ({len(audit.phantom_drains)} 次):")
+        lines.append(f"  ● ⚠️ 本机无匹配步骤的配额下降 ({len(audit.phantom_drains)} 次):")
         for p in audit.phantom_drains[-4:]:
             p3_seg = f" | Claude/3P周池掉 -{p.p3_weekly_drop_pct:.3f}%" if p.p3_weekly_drop_pct > 0 else ""
+            if p.p3_5h_drop_pct > 0:
+                p3_seg += f" | Claude/3P 5h池掉 -{p.p3_5h_drop_pct:.3f}%"
             lines.append(
                 f"    - {p.from_ts} -> {p.to_ts} ({p.from_event}->{p.to_event}): "
                 f"5h池掉 -{p.gemini_5h_drop_pct:.3f}% | 周池掉 -{p.gemini_weekly_drop_pct:.3f}%{p3_seg}"
             )
     else:
-        lines.append("  ● 幽灵暗扣检测   : ✓ 暂未发现零对话区间的异常掉点")
+        lines.append("  ● 本机未匹配步骤检测 : ✓ 暂未发现本机无匹配步骤的配额变化")
 
     if audit.slope_samples:
-        lines.append("  ● 实测扣费斜率样本 (ΔQuota% vs 真实 Token 消耗):")
+        lines.append("  ● 配额差值与本机 Token 记录的斜率样本:")
         for sp in audit.slope_samples[-4:]:
             p5_txt = f"${sp.implied_5h_pool_usd_at_1x:.2f}" if sp.implied_5h_pool_usd_at_1x else "-"
             pw_txt = f"${sp.implied_weekly_pool_usd_at_1x:.2f}" if sp.implied_weekly_pool_usd_at_1x else "-"
@@ -179,4 +191,51 @@ def render_ledger_report(
             )
 
     lines.append("═" * 82)
+    return "\n".join(lines)
+
+
+def render_vault_status_report(st: VaultStatusReport, sessions: Optional[List[VaultSessionItem]] = None) -> str:
+    lines: List[str] = []
+    lines.append("═" * 78)
+    lines.append("  ✦ Orion-Vault · 对话自动增量备份与防误删时光保险箱")
+    lines.append("═" * 78)
+    sw = "🟢 已开启 (每轮对话结束实时增量归档 + 后台巡检)" if st.auto_backup_enabled else "⚪ 已关闭 (仅保留已有归档，暂停自动备份)"
+    lines.append(f"  ● 自动备份总开关 : {sw}")
+    lines.append(f"  ● 保险箱本地路径 : {st.vault_dir}")
+    lines.append(
+        f"  ● 已保护会话总数 : {st.total_conversations} 个 "
+        f"(🟢 主库在线={st.active_conversations} 个 | 🗑️ 主库已删但可恢复={st.deleted_conversations} 个)"
+    )
+    lines.append(f"  ● 归档占用总体积 : {st.total_vault_mb:.2f} MB  |  最近同步: {_fmt_cn_time(st.last_sync_at)}")
+    lines.append("  ● 快捷开关命令   : `python -m acerola_orion vault on` / `off` / `toggle`")
+
+    if sessions is not None:
+        lines.append("\n【最近归档对话列表 (已删优先置顶)】")
+        if not sessions:
+            lines.append("  (当前筛选条件下暂无归档记录)")
+        for s in sessions:
+            badge = "🗑️已删可恢复" if s.live_status == "deleted" else "🟢主库在线  "
+            short_t = (s.title[:34] + "…") if len(s.title) > 35 else s.title
+            lines.append(
+                f"  • [{badge}] {s.conv_id[:8]} | {_fmt_cn_time(s.last_modified_at)} | "
+                f"步={s.step_count:<4} | {short_t}"
+            )
+    lines.append("═" * 78)
+    return "\n".join(lines)
+
+
+def render_vault_search_report(hits: List[VaultSearchHit], keywords: List[str]) -> str:
+    lines: List[str] = []
+    lines.append("═" * 78)
+    lines.append(f"  ✦ Orion-Vault · 保险箱全量检索 (含已删除对话) | 靶词: {' '.join(keywords)} | 命中: {len(hits)} 个会话")
+    lines.append("═" * 78)
+    if not hits:
+        lines.append("  (未命中匹配会话)")
+    for h in hits:
+        badge = "🗑️已删可恢复" if h.live_status == "deleted" else "🟢在线"
+        lines.append(f"\n  ▸ [{badge}] {h.conv_id}  ({_fmt_cn_time(h.last_modified_at)}, 步={h.step_count})")
+        lines.append(f"    标题: {h.title}")
+        for lno, role, snip in h.snippets:
+            lines.append(f"    [L{lno:<4} {role:<5}] {snip}")
+    lines.append("═" * 78)
     return "\n".join(lines)

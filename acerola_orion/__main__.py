@@ -2,12 +2,13 @@
 """
 Acerola-Orion 统一命令行入口与启动器部署器 (acerola_orion/__main__.py)
 支持子命令:
-  status             实时 7 位精度配额水位、订阅层级、旁路审查延迟与内核守卫状态 (默认)
-  radar              实时观测本地活跃会话上下文体积与 Prompt KV 缓存 250s 余温倒计时
-  ledger             本地 Token 明细账本 (每日/模型家族/活跃会话) 与电子秤验钞机报告
-  audit              单独输出高精度配额斜率与无对话幽灵掉点验钞报告
-  guard <action>     管理零轮询内核断头台守卫 (status | start | stop | install | uninstall | daemon | retire-legacy)
-  panel              启动黑曜石绯红桌面可视化主控台
+  status             实时 7 位精度配额水位、订阅层级、旁路审查延迟、内核守卫与保险箱状态 (默认)
+  radar              实时观测本地活跃会话上下文体积、200K 2x 预警与 Prompt KV 缓存 250s 余温倒计时
+  ledger             本地 Token 明细账本 (每日/模型家族/活跃会话) 与配额快照分析
+  audit              单独输出高精度配额斜率与本机未匹配步骤配额变化分析
+  vault <action>     Orion-Vault 对话自动增量备份、可控开关与误删对话恢复/导出
+  guard <action>     管理 Windows 内核句柄断头台进程守卫 (status | start | stop | install | uninstall | daemon | retire-legacy)
+  panel              启动猎户座星盘桌面可视化主控台
   install-launchers  在 ~/workspaces/launchers 生成快捷启动脚本
 """
 
@@ -20,8 +21,19 @@ from pathlib import Path
 import sys
 from typing import Dict, List, Optional
 
-from .cli_render import render_ledger_report, render_telemetry_report
-from .constants import APP_CODENAME, APP_VERSION, atomic_write_text, get_launchers_dir
+from .cli_render import (
+    render_ledger_report,
+    render_telemetry_report,
+    render_vault_search_report,
+    render_vault_status_report,
+)
+from .constants import (
+    APP_CODENAME,
+    APP_VERSION,
+    atomic_write_text,
+    configure_vault_auto_backup,
+    get_launchers_dir,
+)
 from .guillotine import (
     install_guard_autostart,
     retire_legacy_orphan_killer,
@@ -32,6 +44,7 @@ from .guillotine import (
 )
 from .ledger import MAX_LEDGER_DAYS, OrionLedger
 from .telemetry import collect_telemetry, probe_guard_status
+from .vault import OrionVault, run_stop_hook_from_stdin
 
 
 def _setup_utf8_stdout() -> None:
@@ -103,6 +116,11 @@ def deploy_agyrun_launchers(launchers_dir: Optional[Path] = None) -> List[str]:
         "orion-audit.ps1": _ps1_cli("audit"),
         "acerola-guard-on.ps1": _ps1_cli("guard install"),
         "acerola-guard-off.ps1": _ps1_cli("guard uninstall"),
+        "orion-vault-status.ps1": _ps1_cli("vault status"),
+        "orion-vault-sync.ps1": _ps1_cli("vault sync"),
+        "orion-vault-on.ps1": _ps1_cli("vault on"),
+        "orion-vault-off.ps1": _ps1_cli("vault off"),
+        "orion-vault-toggle.ps1": _ps1_cli("vault toggle"),
     }
 
     written: List[str] = []
@@ -132,17 +150,17 @@ def _ledger_days_arg(raw: str) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="acerola-orion",
-        description=f"{APP_CODENAME} v{APP_VERSION} — Google Antigravity 本地配额水位透视、Token 验钞账本与零轮询内核进程守卫",
+        description=f"{APP_CODENAME} v{APP_VERSION} — Google Antigravity 本地配额水位透视、Token 账本、对话防删保险箱与内核进程守卫",
     )
     sub = parser.add_subparsers(dest="subcommand")
 
     # status
-    p_st = sub.add_parser("status", help="实时探测 7 位精度配额水位、真实订阅层级、旁路审查延迟与守卫状态")
+    p_st = sub.add_parser("status", help="实时探测 7 位精度配额水位、真实订阅层级、旁路审查延迟与守卫/保险箱状态")
     p_st.add_argument("--json", action="store_true", help="输出结构化 JSON")
     p_st.add_argument("--no-record", action="store_true", help="不写入本地配额水位快照")
 
     # radar
-    p_rd = sub.add_parser("radar", help="纯本地被动观测活跃会话上下文体积与 Prompt KV 缓存 250s 余温状态")
+    p_rd = sub.add_parser("radar", help="纯本地被动观测活跃会话上下文体积、200K 2x 预警与 Prompt KV 缓存 250s 余温状态")
     p_rd.add_argument(
         "--mode",
         choices=["smart_guard", "latest", "pinned"],
@@ -153,16 +171,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_rd.add_argument("--json", action="store_true", help="输出结构化 JSON")
 
     # ledger
-    p_lg = sub.add_parser("ledger", help="输出 GPT 同款每日 Token 账本、模型倍率审计与黑盒验钞报告")
+    p_lg = sub.add_parser("ledger", help="汇总本机每日 Token 用量、预设价格估算与配额快照分析")
     p_lg.add_argument("--days", type=_ledger_days_arg, default=14, help="汇总最近 N 天 (默认 14，范围 1..3650)")
     p_lg.add_argument("--json", action="store_true", help="输出结构化 JSON")
 
     # audit
-    p_au = sub.add_parser("audit", help="单独执行配额水位采样并输出扣费斜率与幽灵掉点验钞报告")
+    p_au = sub.add_parser("audit", help="单独执行配额水位采样并比对配额变化与本机步骤")
     p_au.add_argument("--json", action="store_true", help="输出结构化 JSON")
 
     # guard
-    p_gd = sub.add_parser("guard", help="管理零轮询 Win32 内核句柄断头台进程守卫")
+    p_gd = sub.add_parser("guard", help="管理可选的 Windows 内核句柄断头台进程守卫")
     p_gd.add_argument(
         "action",
         choices=["status", "start", "stop", "install", "uninstall", "daemon", "retire-legacy"],
@@ -194,6 +212,38 @@ def build_parser() -> argparse.ArgumentParser:
     p_il = sub.add_parser("install-launchers", help="在 ~/workspaces/launchers 部署快捷启动器脚本")
     p_il.add_argument("--json", action="store_true", help="输出结构化 JSON")
 
+    # vault (Conversation Auto-Backup & Recovery Time-Vault)
+    p_vt = sub.add_parser("vault", help="Orion-Vault 对话自动增量备份、可控开关与误删对话恢复/导出")
+    p_vt.add_argument(
+        "action",
+        choices=[
+            "status",
+            "sync",
+            "on",
+            "enable",
+            "off",
+            "disable",
+            "toggle",
+            "list",
+            "search",
+            "show",
+            "restore",
+            "export",
+            "hook-stop",
+        ],
+        nargs="?",
+        default="status",
+        help="status | sync | on/off/toggle (可控开关) | list | search | show | restore | export | hook-stop",
+    )
+    p_vt.add_argument("targets", nargs="*", help="目标会话 UUID/前缀 或 检索关键词")
+    p_vt.add_argument("--deleted", action="store_true", help="仅列出或仅检索已在客户端删除的对话")
+    p_vt.add_argument("--limit", type=int, default=25, help="返回条数上限 (默认 25)")
+    p_vt.add_argument("--around-line", type=int, default=None, help="show 模式下围绕指定行号展开")
+    p_vt.add_argument("--tail", type=int, default=12, help="show 模式下查看末尾 N 行")
+    p_vt.add_argument("--force", action="store_true", help="restore 模式下若主库仍存在同名对话，留底后强制回滚覆盖")
+    p_vt.add_argument("--auto-only", action="store_true", help="sync 模式下遵循自动备份开关状态")
+    p_vt.add_argument("--json", action="store_true", help="输出结构化 JSON")
+
     return parser
 
 
@@ -213,7 +263,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         if getattr(args, "json", False):
             print(json.dumps(rep.to_dict(), ensure_ascii=False, indent=2))
         else:
-            print(render_telemetry_report(rep))
+            v_st = None
+            try:
+                v_st = OrionVault().get_status(refresh_deleted_flags=False)
+            except Exception:
+                v_st = None
+            print(render_telemetry_report(rep, vault_status=v_st))
         return 0
 
     if cmd == "radar":
@@ -238,6 +293,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
         else:
             print(f"✦ Orion-CacheRadar 本地缓存余温观测: {state.badge_text}")
+            if state.tier_alert_text:
+                print(f"  ● 计价提醒: {state.tier_alert_text}")
             print(f"  ● 明细: {state.detail_text}")
             if candidates:
                 print("  ● 近期活跃会话候选:")
@@ -282,7 +339,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         if getattr(args, "json", False):
             print(json.dumps(audit.to_dict(), ensure_ascii=False, indent=2))
         else:
-            print(f"✦ Orion 验钞快照总数: {audit.total_snapshots} (最新: {audit.latest_snapshot_ts})")
+            print(f"✦ 配额快照总数: {audit.total_snapshots} (最新: {audit.latest_snapshot_ts})")
             print(f"✦ 结论: {audit.verdict}")
         return 0
 
@@ -313,7 +370,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"✦ {out['message']}")
             else:
                 print(json.dumps(out, ensure_ascii=False, indent=2))
-        return 0
+        return 0 if out.get("ok", True) else 1
 
     if cmd == "panel":
         from .panel import launch_panel
@@ -357,6 +414,144 @@ def main(argv: Optional[List[str]] = None) -> int:
             for w in written:
                 print(f"  - {w}")
         return 0
+
+    if cmd == "vault":
+        act_v = str(getattr(args, "action", "status") or "status").lower()
+        targets: List[str] = list(getattr(args, "targets", None) or [])
+        as_json = bool(getattr(args, "json", False))
+
+        if act_v == "hook-stop":
+            sys.stdout.write(run_stop_hook_from_stdin() + "\n")
+            sys.stdout.flush()
+            return 0
+
+        if act_v in ("on", "enable", "off", "disable", "toggle"):
+            res_sw = configure_vault_auto_backup(act_v)
+            if as_json:
+                print(json.dumps(res_sw, ensure_ascii=False, indent=2))
+            else:
+                print(res_sw["message"])
+            return 0 if res_sw.get("ok") else 1
+
+        vault = OrionVault()
+
+        if act_v == "status":
+            st = vault.get_status(refresh_deleted_flags=True)
+            sess_preview = vault.list_sessions(
+                deleted_only=bool(getattr(args, "deleted", False)),
+                limit=max(1, int(getattr(args, "limit", 12))),
+            )
+            if as_json:
+                payload_v = st.to_dict()
+                payload_v["sessions"] = [s.to_dict() for s in sess_preview]
+                print(json.dumps(payload_v, ensure_ascii=False, indent=2))
+            else:
+                print(render_vault_status_report(st, sessions=sess_preview))
+            return 0
+
+        if act_v == "list":
+            st = vault.get_status(refresh_deleted_flags=True)
+            q_str = " ".join(targets).strip()
+            sess_list = vault.list_sessions(
+                deleted_only=bool(getattr(args, "deleted", False)),
+                query=q_str,
+                limit=max(1, int(getattr(args, "limit", 30))),
+            )
+            if as_json:
+                print(json.dumps([s.to_dict() for s in sess_list], ensure_ascii=False, indent=2))
+            else:
+                print(render_vault_status_report(st, sessions=sess_list))
+            return 0
+
+        if act_v == "sync":
+            respect_sw = bool(getattr(args, "auto_only", False))
+            if targets:
+                res_s = vault.sync_conversation(targets[0], respect_switch=respect_sw)
+            else:
+                res_s = vault.sync_all(respect_switch=respect_sw)
+            if as_json:
+                print(json.dumps(res_s.to_dict(), ensure_ascii=False, indent=2))
+            else:
+                prefix = "✅" if res_s.ok else "❌"
+                print(f"{prefix} {res_s.message}")
+            return 0 if res_s.ok else 1
+
+        if act_v == "search":
+            if not targets:
+                print("❌ 请提供至少 1 个检索关键词，例如: python -m acerola_orion vault search 关键词")
+                return 1
+            hits = vault.search_vault(
+                targets,
+                deleted_only=bool(getattr(args, "deleted", False)),
+                limit=max(1, int(getattr(args, "limit", 20))),
+            )
+            if as_json:
+                print(json.dumps([h.to_dict() for h in hits], ensure_ascii=False, indent=2))
+            else:
+                print(render_vault_search_report(hits, targets))
+            return 0
+
+        if act_v == "show":
+            if not targets:
+                print("❌ 请提供会话 UUID 或前 8 位前缀，例如: python -m acerola_orion vault show ce81582f")
+                return 1
+            try:
+                sl = vault.show_slice(
+                    targets[0],
+                    around_line=getattr(args, "around_line", None),
+                    tail=int(getattr(args, "tail", 12)),
+                )
+            except (KeyError, ValueError) as exc:
+                if as_json:
+                    print(json.dumps({"ok": False, "message": str(exc)}, ensure_ascii=False, indent=2))
+                else:
+                    print(f"❌ {exc}")
+                return 1
+            if as_json:
+                print(json.dumps(sl, ensure_ascii=False, indent=2))
+            elif not sl.get("ok"):
+                print(f"⚠️ {sl.get('message')}")
+                return 1
+            else:
+                rng = sl["range"]
+                print(
+                    f"✦ [{sl['live_status']}] {sl['title']} ({sl['conv_id']}) | "
+                    f"行 {rng[0]}..{rng[1]} / 共 {sl['total_lines']} 行"
+                )
+                print("─" * 76)
+                for step in sl["steps"]:
+                    print(f"[L{step['line']:<4} {step['type']:<16} {step['created_at']}] {step['content']}")
+            return 0
+
+        if act_v == "restore":
+            if not targets:
+                print("❌ 请提供要恢复的会话 UUID 或前 8 位前缀，例如: python -m acerola_orion vault restore ce81582f")
+                return 1
+            try:
+                res_r = vault.restore_conversation(targets[0], force=bool(getattr(args, "force", False)))
+            except (KeyError, ValueError) as exc:
+                res_r = {"ok": False, "message": str(exc)}
+            if as_json:
+                print(json.dumps(res_r, ensure_ascii=False, indent=2))
+            else:
+                prefix = "✅" if res_r.get("ok") else "⚠️"
+                print(f"{prefix} {res_r.get('message')}")
+            return 0 if res_r.get("ok") else 1
+
+        if act_v == "export":
+            if not targets:
+                print("❌ 请提供要导出的会话 UUID 或前 8 位前缀，例如: python -m acerola_orion vault export ce81582f")
+                return 1
+            try:
+                res_e = vault.export_markdown(targets[0])
+            except (KeyError, ValueError) as exc:
+                res_e = {"ok": False, "message": str(exc)}
+            if as_json:
+                print(json.dumps(res_e, ensure_ascii=False, indent=2))
+            else:
+                prefix = "✅" if res_e.get("ok") else "❌"
+                print(f"{prefix} {res_e.get('message')}")
+            return 0 if res_e.get("ok") else 1
 
     parser.print_help()
     return 1

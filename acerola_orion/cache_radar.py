@@ -25,13 +25,14 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from .constants import get_agy_brain_dir
-from .ledger import _decode_pbtxt_title
+from .ledger import _decode_pbtxt_title, cache_read_count
 from .rpc import read_shared_tail_bytes
 
 UUID_DIR_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 TAIL_READ_BYTES = 16 * 1024  # Strict 16KB tail read budget
 MAX_CANDIDATE_SESSIONS = 8
+COMPACT_COMMAND_TEXT = "/compact"
 
 TARGET_MODE_SMART_GUARD = "smart_guard"
 TARGET_MODE_LATEST = "latest"
@@ -50,6 +51,12 @@ WARN_IDLE_SEC = 190.0  # 190s ~ 250s -> last 60s warning window
 SMART_HUD_MIN_TOKENS = 100_000  # Smart HUD only pops when context >= 100K
 SMART_HUD_COLD_HIDE_SEC = 15.0  # Retract 15s after cooling (> 265s)
 LARGE_CONTEXT_HINT_TOKENS = 100_000  # Suggest new window or /compact when cold >= 100K
+TIER_2X_WARN_TOKENS = 180_000  # Approaching 200K long-context 2x pricing cliff (within 20K)
+TIER_2X_THRESHOLD_TOKENS = 200_000  # >= 200K triggers 2x long-context pricing tier
+
+PRICING_TIER_NORMAL = "1x"
+PRICING_TIER_NEAR_2X = "near_2x"
+PRICING_TIER_OVER_2X = "2x"
 
 EXECUTING_STEP_MAX_AGE_SEC = 600.0  # 10-min cap for explicit RUNNING/STREAMING steps
 INFLIGHT_TURN_MAX_AGE_SEC = 180.0  # 3-min cap for USER_INPUT / GENERIC / tool_calls awaiting response
@@ -211,6 +218,13 @@ class CacheRadarState:
     detail_text: str = "等待 Antigravity 活跃对话采样（纯本地只读观测）..."
     tooltip_suffix: str = "KV: 暂无活跃会话"
     should_pop_smart_hud: bool = False
+    pricing_tier: str = PRICING_TIER_NORMAL
+    is_near_2x: bool = False
+    is_over_2x: bool = False
+    tokens_to_2x: int = TIER_2X_THRESHOLD_TOKENS
+    tier_badge_text: str = ""
+    hud_tier_tag: str = ""
+    tier_alert_text: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -229,6 +243,7 @@ class RadarSessionCandidate:
     is_pinned: bool = False
     is_current: bool = False
     menu_label: str = ""
+    pricing_tier: str = PRICING_TIER_NORMAL
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -327,9 +342,7 @@ def parse_transcript_tail_bytes(
 
         if step_type == "PLANNER_RESPONSE":
             in_tok = _safe_nonneg_int(obj.get("input_tokens"))
-            cache_tok = _safe_nonneg_int(obj.get("cache_read_tokens"))
-            if cache_tok == 0:
-                cache_tok = _safe_nonneg_int(obj.get("cache_read_input_tokens"))
+            cache_tok = cache_read_count(obj)
             out_tok = _safe_nonneg_int(obj.get("output_tokens"))
             ctx_tok = in_tok + cache_tok + out_tok
             if ctx_tok > 0:
@@ -394,17 +407,55 @@ def normalize_hud_mode(mode: Any) -> str:
     return m if m in VALID_HUD_MODES else "smart"
 
 
+def _evaluate_pricing_tier(context_tokens: int, ctx_lbl: str) -> Tuple[str, bool, bool, int, str, str, str]:
+    """
+    Evaluate 200K long-context 2x pricing cliff:
+    - `>= 200,000`: active 2x pricing (`"2x"`)
+    - `180,000 .. 199,999`: approaching 2x cliff (`"near_2x"`, within 20K)
+    - `< 180,000`: standard 1x tier (`"1x"`)
+    Returns `(pricing_tier, is_near_2x, is_over_2x, tokens_to_2x, tier_badge_text, hud_tier_tag, tier_alert_text)`.
+    """
+    n = max(0, int(context_tokens))
+    if n <= 0:
+        return (PRICING_TIER_NORMAL, False, False, TIER_2X_THRESHOLD_TOKENS, "", "", "")
+    if n >= TIER_2X_THRESHOLD_TOKENS:
+        return (
+            PRICING_TIER_OVER_2X,
+            False,
+            True,
+            0,
+            "💸 已超200K · 双倍计价(2x)",
+            "💸2x计价",
+            f"💸 双倍计价生效中：当前 {ctx_lbl} 已超 200K 门槛，再聊下去每轮均按双倍 (2x) 费率扣减配额！建议立即 {COMPACT_COMMAND_TEXT} 或开新窗口",
+        )
+    if n >= TIER_2X_WARN_TOKENS:
+        rem_tok = max(1, TIER_2X_THRESHOLD_TOKENS - n)
+        gap_lbl = f"{max(1, int(math.ceil(rem_tok / 1000.0)))}K" if rem_tok >= 1000 else str(rem_tok)
+        disp_ctx = f"{n / 1000.0:.1f}K" if n >= 199_500 else ctx_lbl
+        return (
+            PRICING_TIER_NEAR_2X,
+            True,
+            False,
+            rem_tok,
+            f"⚠️ 逼近200K (差{gap_lbl}翻倍)",
+            f"⚠️差{gap_lbl}翻倍",
+            f"⚠️ 逼近双倍计价线：当前 {disp_ctx} 距 200K 门槛仅差 {gap_lbl}，再聊下去即将触发双倍 (2x) 计价！建议准备 {COMPACT_COMMAND_TEXT} 或开新窗口",
+        )
+    return (PRICING_TIER_NORMAL, False, False, TIER_2X_THRESHOLD_TOKENS - n, "", "", "")
+
+
 def _format_candidate_menu_label(cand_state: CacheRadarState, title: str, conv_id: str) -> str:
     short_id = conv_id[:8] if conv_id else "-"
     clean_t = _clean_single_line_title(title, max_chars=22) or "未命名窗口"
+    tier_mark = "·2x" if cand_state.is_over_2x else ("·近200K" if cand_state.is_near_2x else "")
     if cand_state.phase == PHASE_ACTIVE:
-        icon, tag = "⚡", f"{cand_state.context_label}·推理中"
+        icon, tag = "⚡", f"{cand_state.context_label}{tier_mark}·推理中"
     elif cand_state.phase == PHASE_HOT:
-        icon, tag = "🔥", f"{cand_state.context_label}·剩{format_mmss(cand_state.remaining_sec)}"
+        icon, tag = "🔥", f"{cand_state.context_label}{tier_mark}·剩{format_mmss(cand_state.remaining_sec)}"
     elif cand_state.phase == PHASE_WARNING:
-        icon, tag = "⚠️", f"{cand_state.context_label}·剩{format_mmss(cand_state.remaining_sec)}"
+        icon, tag = "⚠️", f"{cand_state.context_label}{tier_mark}·剩{format_mmss(cand_state.remaining_sec)}"
     elif cand_state.phase == PHASE_COLD:
-        icon, tag = "❄️", f"{cand_state.context_label}·已冷"
+        icon, tag = "❄️", f"{cand_state.context_label}{tier_mark}·已冷"
     else:
         icon, tag = "⚪", "新窗口"
     return f"{icon} [{tag}] {clean_t} ({short_id})"
@@ -499,6 +550,15 @@ def evaluate_cache_radar_state(
     idle_sec = 0.0 if is_executing else (max(0.0, now_ep - resp_ep) if resp_ep > 0 else 0.0)
 
     ctx_lbl = format_tokens_compact(snap.context_tokens)
+    (
+        pricing_tier,
+        is_near_2x,
+        is_over_2x,
+        tokens_to_2x,
+        tier_badge_text,
+        hud_tier_tag,
+        tier_alert_text,
+    ) = _evaluate_pricing_tier(snap.context_tokens, ctx_lbl)
     hit_pct = int(round(snap.cache_hit_rate * 100.0))
     tok_breakdown = (
         f"{conv_header} | 新鲜In={snap.input_tokens:,} · 缓存读={snap.cache_read_tokens:,} · Out={snap.output_tokens:,}"
@@ -510,31 +570,35 @@ def evaluate_cache_radar_state(
         ttl_fraction = 1.0
         badge_text = f"{pin_badge_prefix}⚡ {ctx_lbl} · 推理活跃中"
         capsule_text = f"{pin_badge_prefix}⚡ {ctx_lbl} · 推理活跃中"
-        detail_text = f"{tok_breakdown} (上轮命中 {hit_pct}%)"
+        detail_text = f"{tok_breakdown} (上轮缓存读取占比{hit_pct}%，剩余时间按本地估算)"
     elif idle_sec < WARN_IDLE_SEC:
         phase = PHASE_HOT
         remaining_sec = max(0.0, CACHE_SAFE_TTL_SEC - idle_sec)
         ttl_fraction = remaining_sec / CACHE_SAFE_TTL_SEC
-        badge_text = f"{pin_badge_prefix}🔥 {ctx_lbl} (命中{hit_pct}%) · 余温 {format_mmss(remaining_sec, pad_min=False)}"
+        badge_text = f"{pin_badge_prefix}🔥 {ctx_lbl} (上轮缓存读{hit_pct}%) · 预计 {format_mmss(remaining_sec, pad_min=False)}"
         capsule_text = f"{pin_badge_prefix}🔥 {ctx_lbl} · {format_mmss(remaining_sec, pad_min=True)}"
-        detail_text = f"{tok_breakdown} | 250s 缓存热窗口倒计时中"
+        detail_text = f"{tok_breakdown} | 250s 本地缓存余温估算倒计时中"
     elif idle_sec <= CACHE_SAFE_TTL_SEC:
         phase = PHASE_WARNING
         remaining_sec = max(0.0, CACHE_SAFE_TTL_SEC - idle_sec)
         ttl_fraction = remaining_sec / CACHE_SAFE_TTL_SEC
-        badge_text = f"{pin_badge_prefix}⚠️ {ctx_lbl} 快凉 · 剩 {format_mmss(remaining_sec, pad_min=False)}"
-        capsule_text = f"{pin_badge_prefix}⚠️ {ctx_lbl} 快凉 · 剩 {format_mmss(remaining_sec, pad_min=False)}"
-        detail_text = f"{tok_breakdown} | ⏰ 进入最后 60s 临期窗口，趁热追问可免全量重算"
+        badge_text = f"{pin_badge_prefix}⚠️ {ctx_lbl} 快凉 · 预计剩 {format_mmss(remaining_sec, pad_min=False)}"
+        capsule_text = f"{pin_badge_prefix}⚠️ {ctx_lbl} 快凉 · 预计剩 {format_mmss(remaining_sec, pad_min=False)}"
+        detail_text = f"{tok_breakdown} | ⏰ 本地预计剩余不足 60 秒；服务端缓存状态未知。"
     else:
         phase = PHASE_COLD
         remaining_sec = 0.0
         ttl_fraction = 0.0
-        badge_text = f"{pin_badge_prefix}❄️ {ctx_lbl} 已冷 · 首句重算~{ctx_lbl}"
-        capsule_text = f"{pin_badge_prefix}❄️ {ctx_lbl} 已冷 · 重算~{ctx_lbl}"
-        if snap.context_tokens >= LARGE_CONTEXT_HINT_TOKENS:
+        badge_text = f"{pin_badge_prefix}❄️ {ctx_lbl} 预计已冷 · 上轮上下文~{ctx_lbl}"
+        capsule_text = f"{pin_badge_prefix}❄️ {ctx_lbl} 预计已冷 · 上轮上下文~{ctx_lbl}"
+        if snap.context_tokens >= TIER_2X_THRESHOLD_TOKENS:
+            cold_tip = "💸 已超 200K 双倍计价线且缓存已冷：续聊将触发 2x 全价重算！建议先执行 /compact 或直接开新窗口"
+        elif snap.context_tokens >= TIER_2X_WARN_TOKENS:
+            cold_tip = "⚠️ 逼近 200K 双倍计价线且缓存已冷：续聊易跨入 2x 费率区，建议先执行 /compact 或直接开新窗口"
+        elif snap.context_tokens >= LARGE_CONTEXT_HINT_TOKENS:
             cold_tip = "💡 大上下文已过 250s 余温线：换新话题建议开新窗口，同任务建议先 /compact"
         else:
-            cold_tip = "闲置已超过 4分10秒 本地缓存余温参考线"
+            cold_tip = "闲置已超本地 4 分 10 秒的估算窗口"
         detail_text = f"{tok_breakdown} | {cold_tip}"
 
     should_pop_smart = (
@@ -542,6 +606,7 @@ def evaluate_cache_radar_state(
         and (snap.context_tokens >= SMART_HUD_MIN_TOKENS or is_pinned_match)
         and WARN_IDLE_SEC <= idle_sec <= (CACHE_SAFE_TTL_SEC + SMART_HUD_COLD_HIDE_SEC)
     )
+    tip_tier_suffix = " [2x]" if is_over_2x else (" [近200K]" if is_near_2x else "")
 
     return CacheRadarState(
         phase=phase,
@@ -567,8 +632,15 @@ def evaluate_cache_radar_state(
         badge_text=badge_text,
         capsule_text=capsule_text,
         detail_text=detail_text,
-        tooltip_suffix=f"KV: {badge_text}",
+        tooltip_suffix=f"KV: {badge_text}{tip_tier_suffix}",
         should_pop_smart_hud=should_pop_smart,
+        pricing_tier=pricing_tier,
+        is_near_2x=is_near_2x,
+        is_over_2x=is_over_2x,
+        tokens_to_2x=tokens_to_2x,
+        tier_badge_text=tier_badge_text,
+        hud_tier_tag=hud_tier_tag,
+        tier_alert_text=tier_alert_text,
     )
 
 
@@ -606,7 +678,6 @@ class CacheRadarSampler:
 
         self._brain_mtime_ns: Optional[int] = None
         self._uuid_dirs: Dict[str, Path] = {}
-        self._missing_conv_mtime_ns: Dict[str, int] = {}
 
         self._snap_cache: Dict[str, Tuple[int, int, TranscriptTailSnapshot]] = {}
         self._title_cache: Dict[str, Tuple[int, int, str]] = {}
@@ -655,7 +726,6 @@ class CacheRadarSampler:
         if not os.path.lexists(self.brain_dir) or _has_reparse_or_symlink(self.brain_dir):
             self._brain_mtime_ns = None
             self._uuid_dirs.clear()
-            self._missing_conv_mtime_ns.clear()
             return
         try:
             st_brain = self.brain_dir.stat()
@@ -686,8 +756,6 @@ class CacheRadarSampler:
 
         self._uuid_dirs = valid_dirs
         self._brain_mtime_ns = int(st_brain.st_mtime_ns)
-        for dead_k in [k for k in self._missing_conv_mtime_ns if k not in valid_dirs]:
-            del self._missing_conv_mtime_ns[dead_k]
         for dead_s in [k for k in self._snap_cache if k not in valid_dirs]:
             del self._snap_cache[dead_s]
 
@@ -698,26 +766,12 @@ class CacheRadarSampler:
 
         found: List[Tuple[int, int, str, Path]] = []
         for conv_id, conv_dir in list(self._uuid_dirs.items()):
-            prev_missing_dir_mtime = self._missing_conv_mtime_ns.get(conv_id)
-            if prev_missing_dir_mtime is not None:
-                try:
-                    cur_dir_mtime = int(conv_dir.stat().st_mtime_ns)
-                except OSError:
-                    continue
-                if cur_dir_mtime == prev_missing_dir_mtime:
-                    continue
-
             transcript_p = conv_dir / ".system_generated" / "logs" / "transcript.jsonl"
             try:
                 st = os.lstat(transcript_p)
             except OSError:
-                try:
-                    self._missing_conv_mtime_ns[conv_id] = int(conv_dir.stat().st_mtime_ns)
-                except OSError:
-                    pass
                 continue
 
-            self._missing_conv_mtime_ns.pop(conv_id, None)
             if stat.S_ISLNK(st.st_mode) or (
                 getattr(st, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
             ):
@@ -879,6 +933,7 @@ class CacheRadarSampler:
                         is_pinned=is_pin,
                         is_current=is_cur,
                         menu_label=_format_candidate_menu_label(st, title, cid),
+                        pricing_tier=st.pricing_tier,
                     )
                 )
         return out

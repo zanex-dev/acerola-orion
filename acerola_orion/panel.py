@@ -3,9 +3,9 @@
 Acerola-Orion 桌面星盘主控台 (acerola_orion/panel.py)
 - 视觉升级：猎户座星盘 · 精密机械双轨计时仪 (Orion Astrolabe & Chronograph)
 - 双视图模式无缝切换：
-  1) 全盘观测台 (Full Mode)：双座猎户座星盘计时仪 + 1.5x 电子秤验钞账本 + 零轮询断头台 + 风控示波台
+  1) 全盘观测台 (Full Mode)：双座猎户座星盘计时仪 + 预设倍率对账账本 + 对话防删保险箱 + 事件驱动断头台 + 风控示波台
   2) 极简专注模式 (Zen Mode)：专为直观展示设计，同屏严格遵循「1 个核心数据 + 1 张统计图」
-- 原生 Win32 DWM 沉浸式暗黑标题栏 + 全分辨率 High-DPI 自适应 + 0% CPU 托盘休眠
+- 原生 Win32 DWM 沉浸式暗黑标题栏 + 全分辨率 High-DPI 自适应 + 低开销托盘休眠
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .cache_radar import (
     CACHE_SAFE_TTL_SEC,
+    COMPACT_COMMAND_TEXT,
     LARGE_CONTEXT_HINT_TOKENS,
     PHASE_ACTIVE,
     PHASE_COLD,
@@ -40,6 +41,7 @@ from .cache_radar import (
     CacheRadarState,
     RadarSessionCandidate,
     format_mmss,
+    format_tokens_compact,
     normalize_hud_mode,
     normalize_target_mode,
 )
@@ -48,10 +50,12 @@ from .constants import (
     APP_TRINITY,
     APP_VERSION,
     atomic_write_text,
+    configure_vault_auto_backup,
     get_data_dir,
     get_guillotine_log_path,
     get_ls_log_path,
     interprocess_file_lock,
+    is_vault_auto_backup_enabled,
 )
 from .guillotine import install_guard_autostart, uninstall_guard_autostart
 from .ledger import OrionLedger
@@ -64,6 +68,7 @@ from .telemetry import (
     load_json_safe,
     strip_glog_init_noise,
 )
+from .vault import OrionVault, VaultSessionItem, VaultStatusReport, _fmt_cn_time
 from .win_tray import (
     MenuSpec,
     Win32TrayController,
@@ -246,18 +251,27 @@ def _save_ui_prefs(
 def _radar_palette(state: CacheRadarState) -> Tuple[str, str, str]:
     """Return `(fg_color, bar_color, border_color)` matching Obsidian + Crimson Astrolabe palette."""
     if state.phase == PHASE_ACTIVE:
-        return (ACCENT_CYAN, ACCENT_CYAN, "#1e3a5f")
-    if state.phase == PHASE_HOT:
-        return (ACCENT_GREEN, ACCENT_GREEN, BORDER_SUBTLE)
-    if state.phase == PHASE_WARNING:
+        fg, bar, border = (ACCENT_CYAN, ACCENT_CYAN, "#1e3a5f")
+    elif state.phase == PHASE_HOT:
+        fg, bar, border = (ACCENT_GREEN, ACCENT_GREEN, BORDER_SUBTLE)
+    elif state.phase == PHASE_WARNING:
         if state.remaining_sec <= 30.0:
-            return (ACCENT_ROSE, ACCENT_CRIMSON, ACCENT_CRIMSON)
-        return (ACCENT_AMBER, ACCENT_AMBER, ACCENT_CRIMSON)
-    if state.phase == PHASE_COLD:
+            fg, bar, border = (ACCENT_ROSE, ACCENT_CRIMSON, ACCENT_CRIMSON)
+        else:
+            fg, bar, border = (ACCENT_AMBER, ACCENT_AMBER, ACCENT_CRIMSON)
+    elif state.phase == PHASE_COLD:
         if state.context_tokens >= LARGE_CONTEXT_HINT_TOKENS:
-            return (ACCENT_AMBER, "#475569", "#78350f")
-        return (FG_MUTED, "#334155", BORDER_SUBTLE)
-    return (FG_MUTED, "#1e1b29", BORDER_SUBTLE)
+            fg, bar, border = (ACCENT_AMBER, "#475569", "#78350f")
+        else:
+            fg, bar, border = (FG_MUTED, "#334155", BORDER_SUBTLE)
+    else:
+        return (FG_MUTED, "#1e1b29", BORDER_SUBTLE)
+
+    if getattr(state, "is_over_2x", False):
+        border = ACCENT_CRIMSON
+    elif getattr(state, "is_near_2x", False) and border in (BORDER_SUBTLE, "#1e3a5f", "#78350f"):
+        border = ACCENT_AMBER
+    return (fg, bar, border)
 
 
 def clamp_hud_coords(
@@ -321,7 +335,8 @@ def _compose_tray_tooltip(base_line: str, radar_state: Optional[CacheRadarState]
 class CacheRadarHudWindow(tk.Toplevel):
     """
     Frameless, always-on-top High-DPI Obsidian+Crimson mini floating capsule HUD (100% passive read-only).
-    Supports mouse dragging with coordinate persistence, double-click panel wakeup, and window-target switching.
+    Supports mouse dragging with coordinate persistence, double-click panel wakeup, window-target switching,
+    200K 2x pricing tier indicator, and quick `/compact` copy.
     """
 
     def __init__(
@@ -336,6 +351,7 @@ class CacheRadarHudWindow(tk.Toplevel):
         target_getter: Optional[Callable[[], Tuple[str, str]]] = None,
         sessions_provider: Optional[Callable[[], Sequence[RadarSessionCandidate]]] = None,
         on_select_target: Optional[Callable[[str, str], Any]] = None,
+        on_copy_compact: Optional[Callable[[], Any]] = None,
     ) -> None:
         super().__init__(master, bg=BG_ROOT)
         self.withdraw()
@@ -348,12 +364,16 @@ class CacheRadarHudWindow(tk.Toplevel):
         self._target_getter = target_getter
         self._sessions_provider = sessions_provider
         self._on_select_target = on_select_target
+        self._on_copy_compact = on_copy_compact
         self._is_shown = False
         self._positioned_once = False
         self._drag_origin: Optional[Tuple[int, int, int, int]] = None
         self._drag_moved = False
         self._fraction = 0.0
         self._bar_color = BORDER_SUBTLE
+        self._toast_text = ""
+        self._toast_until_mono = 0.0
+        self._hud_tier_packed = False
 
         try:
             self.overrideredirect(True)
@@ -394,6 +414,17 @@ class CacheRadarHudWindow(tk.Toplevel):
         )
         self.lbl_capsule.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
+        self.lbl_hud_tier = tk.Label(
+            row,
+            text="",
+            bg="#4c0519",
+            fg="#fda4af",
+            font=("Microsoft YaHei UI", 8, "bold"),
+            padx=self._px(6),
+            pady=self._px(2),
+            cursor="fleur",
+        )
+
         self.bar_canvas = tk.Canvas(
             self.shell,
             height=max(2, self._px(3)),
@@ -414,7 +445,7 @@ class CacheRadarHudWindow(tk.Toplevel):
         )
         self._rebuild_ctx_menu()
 
-        for w in (self.shell, row, self.accent_strip, self.lbl_capsule, self.bar_canvas):
+        for w in (self.shell, row, self.accent_strip, self.lbl_capsule, self.lbl_hud_tier, self.bar_canvas):
             w.bind("<ButtonPress-1>", self._on_press)
             w.bind("<B1-Motion>", self._on_motion)
             w.bind("<ButtonRelease-1>", self._on_release)
@@ -424,10 +455,26 @@ class CacheRadarHudWindow(tk.Toplevel):
     def _px(self, base: int) -> int:
         return int(round(base * self._dpi_scale))
 
+    def flash_toast(self, text: str, duration_sec: float = 1.6) -> None:
+        self._toast_text = str(text or "").strip()
+        self._toast_until_mono = time.monotonic() + max(0.3, float(duration_sec))
+        if self._toast_text:
+            try:
+                self.lbl_capsule.configure(text=self._toast_text, fg=ACCENT_CYAN)
+            except Exception:
+                pass
+
     def _rebuild_ctx_menu(self) -> None:
         self._ctx_menu.delete(0, tk.END)
         cur_hud = self._hud_mode_getter() if self._hud_mode_getter is not None else ""
         t_mode, pin_cid = self._target_getter() if self._target_getter is not None else (TARGET_MODE_SMART_GUARD, "")
+
+        if self._on_copy_compact is not None:
+            self._ctx_menu.add_command(
+                label=f"✂️ 复制上下文压缩口令 (「{COMPACT_COMMAND_TEXT}」· 压回 200K 内免双倍计价)",
+                command=self._on_copy_compact,
+            )
+            self._ctx_menu.add_separator()
 
         if self._on_select_target is not None:
             sel_fn = self._on_select_target
@@ -502,8 +549,31 @@ class CacheRadarHudWindow(tk.Toplevel):
         fg_color, bar_color, border_color = _radar_palette(state)
         self._fraction = state.ttl_fraction
         self._bar_color = bar_color
-        self.lbl_capsule.configure(text=state.capsule_text, fg=fg_color)
-        self.accent_strip.configure(bg=bar_color)
+        toast_active = bool(self._toast_text and time.monotonic() < self._toast_until_mono)
+        if toast_active:
+            self.lbl_capsule.configure(text=self._toast_text, fg=ACCENT_CYAN)
+        else:
+            self._toast_text = ""
+            self.lbl_capsule.configure(text=state.capsule_text, fg=fg_color)
+
+        hud_tag = "" if toast_active else str(getattr(state, "hud_tier_tag", "") or "")
+        if hud_tag:
+            is_2x = bool(getattr(state, "is_over_2x", False))
+            self.lbl_hud_tier.configure(
+                text=hud_tag,
+                bg="#4c0519" if is_2x else "#451a03",
+                fg="#fda4af" if is_2x else "#fcd34d",
+            )
+            if not self._hud_tier_packed:
+                self.lbl_hud_tier.pack(side=tk.LEFT, padx=(0, self._px(6)), pady=self._px(3))
+                self._hud_tier_packed = True
+                if self._positioned_once:
+                    self._ensure_geometry()
+        elif self._hud_tier_packed:
+            self.lbl_hud_tier.pack_forget()
+            self._hud_tier_packed = False
+
+        self.accent_strip.configure(bg=ACCENT_CRIMSON if getattr(state, "is_over_2x", False) else bar_color)
         self.shell.configure(highlightbackground=border_color)
         self._redraw_bar()
 
@@ -1493,11 +1563,19 @@ class AcerolaOrionApp(tk.Tk):
         self._tray: Optional[Win32TrayController] = None
         self._hud_win: Optional[CacheRadarHudWindow] = None
         self._action_buttons: List[tk.Button] = []
+        self._auto_refresh_id: Optional[str] = None
         self._ledger = OrionLedger()
+        self._vault = OrionVault()
+        self._vault_auto_enabled: bool = is_vault_auto_backup_enabled()
+        self._vault_deleted_only: bool = False
+        self._last_vault_status: Optional[VaultStatusReport] = None
         self._last_report: Optional[OrionTelemetryReport] = None
         self._last_daily: List[Any] = []
         self._last_audit: Any = None
         self._last_quota_series: List[Dict[str, Any]] = []
+        self._notified_tier_levels: Dict[str, int] = {}
+        self._tier_hud_until_mono: float = 0.0
+        self._last_copied_text: str = ""
 
         prefs = _load_ui_prefs()
         self._view_mode: str = (
@@ -1563,6 +1641,7 @@ class AcerolaOrionApp(tk.Tk):
                 target_getter=lambda: (self._target_mode, self._pinned_conv_id),
                 sessions_provider=lambda: self._cache_radar.list_recent_sessions(limit=6),
                 on_select_target=self.set_radar_target,
+                on_copy_compact=self.copy_compact_command,
             )
 
         if enable_tray and sys.platform == "win32":
@@ -1638,7 +1717,7 @@ class AcerolaOrionApp(tk.Tk):
         self._refresh_active_charts_and_zen()
 
     def select_full_tab(self, tab_key: str) -> None:
-        if tab_key not in ("hub", "ledger", "diag"):
+        if tab_key not in ("hub", "ledger", "vault", "diag"):
             return
         self._active_full_tab = tab_key
         for k, frame in self._full_tab_frames.items():
@@ -1694,14 +1773,20 @@ class AcerolaOrionApp(tk.Tk):
         m_smart = "● " if cur_hud == "smart" else "○ "
         m_always = "● " if cur_hud == "always" else "○ "
         m_off = "● " if cur_hud == "off" else "○ "
+        v_mark = "● " if bool(self.__dict__.get("_vault_auto_enabled", True)) else "○ "
         return [
             (f"✦ 打开主控台 ({APP_CODENAME})", self.restore_from_tray),
             (mode_lbl, lambda: self._ui_call(self.toggle_view_mode)),
+            (
+                f"✂️ 复制上下文压缩口令 (「{COMPACT_COMMAND_TEXT}」· 免200K双倍计价)",
+                lambda: self._ui_call(self.copy_compact_command),
+            ),
             None,
             (f"{m_smart}🎯 缓存胶囊 · 智能预警 (≥100K临期)", lambda: self._ui_call(lambda: self.set_hud_mode("smart"))),
             (f"{m_always}📌 缓存胶囊 · 常驻桌面", lambda: self._ui_call(lambda: self.set_hud_mode("always"))),
             (f"{m_off}🚫 缓存胶囊 · 关闭悬浮", lambda: self._ui_call(lambda: self.set_hud_mode("off"))),
             None,
+            (f"{v_mark}🗄️ 对话自动备份 (防误删保险箱)", lambda: self._ui_call(self._toggle_vault_auto_backup)),
             ("🔍 立即采样配额水位快照", lambda: self._run_action("托盘 · 采样配额水位快照", self._sample_watermark_now)),
             ("🛡️ 启用并注册开机自启守卫", lambda: self._run_action("托盘 · 部署断头台内核守卫", install_guard_autostart)),
             ("⏹️ 停用并卸载断头台守卫", lambda: self._run_action("托盘 · 停用断头台内核守卫", uninstall_guard_autostart)),
@@ -1717,15 +1802,18 @@ class AcerolaOrionApp(tk.Tk):
             self.exit_app()
             return
         self._hidden_to_tray = True
+        self._cancel_auto_refresh()
         try:
             self.withdraw()
         except Exception:
             pass
+        if "_radar_state" in self.__dict__:
+            self._apply_radar_state_to_ui(self._radar_state)
         if notify and not self.__dict__.get("_tray_hint_shown"):
             self._tray_hint_shown = True
             tray.notify_balloon(
                 f"{APP_CODENAME} 已驻留托盘",
-                "星盘主控台已转入右下角静默休眠（0% CPU）。单击托盘图标唤醒，右键可切换极简/全盘视图、管理缓存胶囊或彻底退出。",
+                "星盘主控台已转入右下角静默休眠。单击托盘图标唤醒，右键可切换极简/全盘视图、管理缓存胶囊、开关对话自动备份或彻底退出。",
             )
 
     def restore_from_tray(self) -> None:
@@ -1750,6 +1838,7 @@ class AcerolaOrionApp(tk.Tk):
 
     def exit_app(self) -> None:
         self._closing = True
+        self._cancel_auto_refresh()
         self._hidden_to_tray = False
         hud = self.__dict__.get("_hud_win")
         if hud is not None:
@@ -1921,7 +2010,7 @@ class AcerolaOrionApp(tk.Tk):
 
         self.lbl_header_sub = tk.Label(
             titles,
-            text=f"{APP_TRINITY}  ·  猎户座星盘配额观测台 & 零轮询断头台",
+            text=f"{APP_TRINITY}  ·  猎户座星盘配额观测台 & 事件驱动断头台",
             bg=BG_HEADER,
             fg=FG_MUTED,
             font=("Microsoft YaHei UI", 8),
@@ -2020,7 +2109,7 @@ class AcerolaOrionApp(tk.Tk):
                 fg=ACCENT_GOLD,
             )
             self.lbl_header_sub.configure(
-                text=f"{APP_TRINITY}  ·  猎户座星盘配额观测台 & 零轮询断头台"
+                text=f"{APP_TRINITY}  ·  猎户座星盘配额观测台 & 事件驱动断头台"
             )
 
     # ------------------------------------------------------------------
@@ -2095,9 +2184,10 @@ class AcerolaOrionApp(tk.Tk):
         nav_bar.pack(fill=tk.X, pady=(0, self._px(8)))
 
         nav_specs = [
-            ("hub", "🔭 猎户座双星盘总览 (Astrolabe)"),
-            ("ledger", "📒 Token 账单与 1.5x 验钞台 (Ledger)"),
-            ("diag", "🩺 旁路风控示波与守护日志 (Diagnostics)"),
+            ("hub", "🔭 双星盘总览 (Astrolabe)"),
+            ("ledger", "📒 Token 账单与估算 (Ledger)"),
+            ("vault", "🗄️ 对话防删保险箱 (Vault)"),
+            ("diag", "🩺 风控示波与日志 (Diagnostics)"),
         ]
         self._full_nav_buttons: Dict[str, tk.Button] = {}
         for idx, (key, txt) in enumerate(nav_specs):
@@ -2116,15 +2206,18 @@ class AcerolaOrionApp(tk.Tk):
 
         self.tab_hub = tk.Frame(self.full_container, bg=BG_ROOT)
         self.tab_ledger = tk.Frame(self.full_container, bg=BG_ROOT)
+        self.tab_vault = tk.Frame(self.full_container, bg=BG_ROOT)
         self.tab_diag = tk.Frame(self.full_container, bg=BG_ROOT)
         self._full_tab_frames = {
             "hub": self.tab_hub,
             "ledger": self.tab_ledger,
+            "vault": self.tab_vault,
             "diag": self.tab_diag,
         }
 
         self._build_hub_tab()
         self._build_ledger_tab()
+        self._build_vault_tab()
         self._build_diag_tab()
         self.select_full_tab("hub")
 
@@ -2301,6 +2394,16 @@ class AcerolaOrionApp(tk.Tk):
         )
         self.lbl_radar_main.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
+        self.lbl_radar_tier_badge = tk.Label(
+            r_left,
+            text="",
+            bg="#4c0519",
+            fg="#fda4af",
+            font=("Microsoft YaHei UI", 8, "bold"),
+            padx=8,
+            pady=1,
+        )
+
         self.radar_canvas = tk.Canvas(
             self.radar_card,
             height=max(4, self._px(5)),
@@ -2320,6 +2423,41 @@ class AcerolaOrionApp(tk.Tk):
             justify="left",
         )
         self.lbl_radar_sub.pack(anchor="w", fill=tk.X)
+
+        self.radar_tier_bar = tk.Frame(
+            self.radar_card,
+            bg="#2a0a18",
+            highlightthickness=1,
+            highlightbackground=ACCENT_CRIMSON,
+            padx=8,
+            pady=3,
+        )
+        self.btn_copy_compact = tk.Button(
+            self.radar_tier_bar,
+            text=f"✂️ 复制 {COMPACT_COMMAND_TEXT}",
+            command=self.copy_compact_command,
+            bg=ACCENT_CRIMSON,
+            fg="#ffffff",
+            activebackground=ACCENT_ROSE,
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=8,
+            pady=1,
+            font=("Microsoft YaHei UI", 8, "bold"),
+            cursor="hand2",
+        )
+        self.btn_copy_compact.pack(side=tk.RIGHT, padx=(8, 0))
+        self.lbl_radar_tier_alert = tk.Label(
+            self.radar_tier_bar,
+            text="",
+            bg="#2a0a18",
+            fg="#fda4af",
+            font=("Microsoft YaHei UI", 8, "bold"),
+            anchor="w",
+            justify="left",
+        )
+        self.lbl_radar_tier_alert.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
         self.radar_card.bind("<Configure>", self._on_radar_card_configure)
         self._refresh_hud_mode_buttons()
         self._refresh_target_switch_button()
@@ -2336,7 +2474,7 @@ class AcerolaOrionApp(tk.Tk):
         p1.grid(row=0, column=0, sticky="nsew", padx=(0, self._px(5)))
 
         p2, self.lbl_tier_main, self.lbl_tier_sub = self._make_instrument_plate(
-            plates_row, "⚖️ 订阅层级 · 1.5x 验钞与拥堵体征"
+            plates_row, "⚖️ 订阅层级 · 预设倍率估算与拥堵体征"
         )
         p2.grid(row=0, column=1, sticky="nsew", padx=self._px(5))
 
@@ -2352,7 +2490,7 @@ class AcerolaOrionApp(tk.Tk):
         p3.grid(row=0, column=2, sticky="nsew", padx=(self._px(5), 0))
         tk.Label(
             p3,
-            text="⚔️ Acerola 零轮询内核断头台守卫",
+            text="⚔️ Acerola 事件驱动进程断头台守卫",
             bg=BG_CARD,
             fg=FG_MUTED,
             font=("Microsoft YaHei UI", 8, "bold"),
@@ -2513,7 +2651,7 @@ class AcerolaOrionApp(tk.Tk):
             ("output", "输出 Output", 105, "e"),
             ("u1x", "1.0x 官方原价", 105, "e"),
             ("uintro", "0.5x 承诺首发价", 110, "e"),
-            ("uagy", "1.5x AGY暗扣估", 115, "e"),
+            ("uagy", "1.5x AGY预设倍率估", 115, "e"),
         ]
         self.tree_daily = self._create_scrolled_treeview(
             self.tab_ledger, cols_daily, headers_daily, height=5, expand=False
@@ -2564,6 +2702,167 @@ class AcerolaOrionApp(tk.Tk):
             self.tab_ledger, cols_sess, headers_sess, height=6, expand=True
         )
 
+    def _build_vault_tab(self) -> None:
+        self.lbl_vault_banner = tk.Label(
+            self.tab_vault,
+            text="正在读取 Orion-Vault 对话防误删保险箱状态...",
+            bg=BG_CARD_ALT,
+            fg=ACCENT_CYAN,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            anchor="w",
+            justify="left",
+            padx=12,
+            pady=8,
+        )
+        self.lbl_vault_banner.pack(fill=tk.X, pady=(2, 6))
+        self.tab_vault.bind(
+            "<Configure>",
+            lambda e: self.lbl_vault_banner.configure(wraplength=max(400, int(e.width) - 36)),
+        )
+
+        ctrl_bar = tk.Frame(
+            self.tab_vault,
+            bg=BG_CARD,
+            highlightthickness=1,
+            highlightbackground=BORDER_SUBTLE,
+            padx=10,
+            pady=8,
+        )
+        ctrl_bar.pack(fill=tk.X, pady=(0, 8))
+
+        self._btn_vault_switch = tk.Button(
+            ctrl_bar,
+            text="🟢 自动备份: 已开启 (点此关闭)",
+            command=self._toggle_vault_auto_backup,
+            bg="#065f46",
+            fg=FG_TEXT,
+            activebackground="#047857",
+            activeforeground=FG_TEXT,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            relief="flat",
+            padx=10,
+            pady=4,
+            cursor="hand2",
+        )
+        self._btn_vault_switch.pack(side=tk.LEFT, padx=(0, 8))
+        self._action_buttons.append(self._btn_vault_switch)
+        self._sync_vault_switch_button(self._vault_auto_enabled)
+
+        self._btn_vault_filter = tk.Button(
+            ctrl_bar,
+            text="🔍 视图: 全部归档",
+            command=self._toggle_vault_filter,
+            bg="#334155",
+            fg=FG_TEXT,
+            activebackground="#475569",
+            activeforeground=FG_TEXT,
+            font=("Microsoft YaHei UI", 9),
+            relief="flat",
+            padx=10,
+            pady=4,
+            cursor="hand2",
+        )
+        self._btn_vault_filter.pack(side=tk.LEFT, padx=(0, 8))
+
+        tk.Label(ctrl_bar, text="检索:", bg=BG_CARD, fg=FG_MUTED, font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT)
+        self._vault_query_var = tk.StringVar(value="")
+        ent_q = tk.Entry(
+            ctrl_bar,
+            textvariable=self._vault_query_var,
+            bg=BG_VOID,
+            fg=FG_TEXT,
+            insertbackground=FG_TEXT,
+            relief="flat",
+            font=("Microsoft YaHei UI", 9),
+            width=18,
+        )
+        ent_q.pack(side=tk.LEFT, padx=(4, 6), ipady=3)
+        ent_q.bind("<Return>", lambda _e: self.refresh_all_async(silent=False))
+
+        btn_search = tk.Button(
+            ctrl_bar,
+            text="筛选",
+            command=lambda: self.refresh_all_async(silent=False),
+            bg="#1e293b",
+            fg=FG_TEXT,
+            font=("Microsoft YaHei UI", 9),
+            relief="flat",
+            padx=8,
+            pady=4,
+            cursor="hand2",
+        )
+        btn_search.pack(side=tk.LEFT, padx=(0, 10))
+
+        btn_export = tk.Button(
+            ctrl_bar,
+            text="📄 导出 Markdown",
+            command=self._on_vault_export_selected,
+            bg="#1e3a8a",
+            fg=FG_TEXT,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            relief="flat",
+            padx=9,
+            pady=4,
+            cursor="hand2",
+        )
+        btn_export.pack(side=tk.RIGHT, padx=(6, 0))
+        self._action_buttons.append(btn_export)
+
+        btn_restore = tk.Button(
+            ctrl_bar,
+            text="♻️ 一键恢复已删",
+            command=self._on_vault_restore_selected,
+            bg=ACCENT_CRIMSON,
+            fg=FG_TEXT,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            relief="flat",
+            padx=9,
+            pady=4,
+            cursor="hand2",
+        )
+        btn_restore.pack(side=tk.RIGHT, padx=(6, 0))
+        self._action_buttons.append(btn_restore)
+
+        btn_sync = tk.Button(
+            ctrl_bar,
+            text="⚡ 立即备份全量",
+            command=lambda: self._run_action(
+                "Orion-Vault · 手动全量增量备份",
+                lambda: self._vault.sync_all(respect_switch=False),
+            ),
+            bg="#4c1d95",
+            fg=FG_TEXT,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            relief="flat",
+            padx=9,
+            pady=4,
+            cursor="hand2",
+        )
+        btn_sync.pack(side=tk.RIGHT)
+        self._action_buttons.append(btn_sync)
+
+        tk.Label(
+            self.tab_vault,
+            text="🗄️ 已归档会话列表 (客户端误删对话将自动标记为 [🗑️已删可恢复] 并置顶保留，绝不随主库连坐清理)",
+            bg=BG_ROOT,
+            fg=ACCENT_ROSE,
+            font=("Microsoft YaHei UI", 9, "bold"),
+        ).pack(anchor="w", pady=(0, 2))
+
+        cols_vault = ("status", "modified", "title", "model", "steps", "size", "uuid")
+        headers_vault = [
+            ("status", "主库状态", 115, "center"),
+            ("modified", "最后活跃时间", 130, "center"),
+            ("title", "会话标题", 360, "w"),
+            ("model", "主模型", 165, "w"),
+            ("steps", "步数", 65, "e"),
+            ("size", "归档体积", 95, "e"),
+            ("uuid", "Conversation UUID", 260, "w"),
+        ]
+        self.tree_vault = self._create_scrolled_treeview(
+            self.tab_vault, cols_vault, headers_vault, height=14, expand=True
+        )
+
     def _build_diag_tab(self) -> None:
         self.lbl_diag_summary = tk.Label(
             self.tab_diag,
@@ -2606,9 +2905,19 @@ class AcerolaOrionApp(tk.Tk):
         for b in self._action_buttons:
             b.configure(state=st)
 
+    def _cancel_auto_refresh(self) -> None:
+        handle = self.__dict__.get("_auto_refresh_id")
+        if handle is not None:
+            try:
+                self.after_cancel(handle)
+            except Exception:
+                pass
+            self._auto_refresh_id = None
+
     def _schedule_auto_refresh(self) -> None:
         if self.auto_refresh_ms > 0 and not self._closing and not self.__dict__.get("_hidden_to_tray"):
-            self.after(self._next_auto_delay_ms(), self._on_auto_timer)
+            if self.__dict__.get("_auto_refresh_id") is None:
+                self._auto_refresh_id = self.after(self._next_auto_delay_ms(), self._on_auto_timer)
 
     def _next_auto_delay_ms(self) -> int:
         """15s while online; offline / logged-out backs off 30s -> 60s -> 120s to prevent idle polling."""
@@ -2619,6 +2928,7 @@ class AcerolaOrionApp(tk.Tk):
         return int(min(max(base, 120_000), base * (2 ** min(streak, 3))))
 
     def _on_auto_timer(self) -> None:
+        self._auto_refresh_id = None
         if self._closing or self.__dict__.get("_hidden_to_tray"):
             return
         if not self._refresh_busy and not self._action_busy:
@@ -2669,6 +2979,9 @@ class AcerolaOrionApp(tk.Tk):
         my_gen = int(self.__dict__.get("_refresh_gen", 0)) + 1
         self._refresh_gen = my_gen
         poll_state: Dict[str, bool] = {"offline": True}
+        q_var = self.__dict__.get("_vault_query_var")
+        vault_query = str(q_var.get()).strip() if q_var is not None else ""
+        vault_del_only = bool(self.__dict__.get("_vault_deleted_only", False))
 
         def worker() -> None:
             try:
@@ -2696,6 +3009,15 @@ class AcerolaOrionApp(tk.Tk):
                 ls_tail = read_shared_file_lines(get_ls_log_path(), max_tail_bytes=128 * 1024)[-40:]
                 radar_obj = self.__dict__.get("_cache_radar")
                 radar_snap = radar_obj.sample() if radar_obj is not None else None
+                v_obj = self.__dict__.get("_vault")
+                vault_st: Optional[VaultStatusReport] = None
+                vault_rows: List[VaultSessionItem] = []
+                if v_obj is not None:
+                    try:
+                        vault_st = v_obj.get_status(refresh_deleted_flags=True)
+                        vault_rows = v_obj.list_sessions(deleted_only=vault_del_only, query=vault_query, limit=120)
+                    except Exception:
+                        vault_st = None
 
                 def _apply_if_current() -> None:
                     if int(self.__dict__.get("_refresh_gen", 0)) != my_gen:
@@ -2703,7 +3025,10 @@ class AcerolaOrionApp(tk.Tk):
                     self.__dict__["_last_quota_series"] = q_series
                     if radar_snap is not None:
                         self._radar_state = radar_snap
-                    self._apply_ui_data(rep, daily, models, sessions, audit, guard_lines, ls_tail, silent)
+                    self._apply_ui_data(
+                        rep, daily, models, sessions, audit, guard_lines, ls_tail, silent,
+                        vault_st=vault_st, vault_rows=vault_rows,
+                    )
 
                 self._ui_call(_apply_if_current)
             except Exception as e:
@@ -2730,6 +3055,64 @@ class AcerolaOrionApp(tk.Tk):
                 self._ui_call(_done)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _sync_vault_switch_button(self, enabled: bool) -> None:
+        self._vault_auto_enabled = bool(enabled)
+        btn = self.__dict__.get("_btn_vault_switch")
+        if btn is not None:
+            try:
+                btn.configure(
+                    text="🟢 自动备份: 已开启 (点此关闭)" if self._vault_auto_enabled else "⚪ 自动备份: 已关闭 (点此开启)",
+                    bg="#065f46" if self._vault_auto_enabled else "#475569",
+                )
+            except Exception:
+                pass
+
+    def _toggle_vault_auto_backup(self) -> None:
+        cur = bool(self.__dict__.get("_vault_auto_enabled", True))
+        next_act = "off" if cur else "on"
+        lbl = "关闭对话自动备份开关" if cur else "开启对话自动备份开关"
+
+        def _do_toggle() -> Dict[str, Any]:
+            res = configure_vault_auto_backup(next_act)
+            self._ui_call(lambda en=bool(res.get("enabled", not cur)): self._sync_vault_switch_button(en))
+            return res
+
+        self._run_action(lbl, _do_toggle)
+
+    def _toggle_vault_filter(self) -> None:
+        self._vault_deleted_only = not bool(self.__dict__.get("_vault_deleted_only", False))
+        btn = self.__dict__.get("_btn_vault_filter")
+        if btn is not None:
+            btn.configure(
+                text="🗑️ 视图: 仅看已删可恢复" if self._vault_deleted_only else "🔍 视图: 全部归档",
+                bg="#9f1239" if self._vault_deleted_only else "#334155",
+            )
+        self.refresh_all_async(silent=False)
+
+    def _get_selected_vault_conv_id(self) -> str:
+        tree = self.__dict__.get("tree_vault")
+        if tree is None:
+            return ""
+        sel = tree.selection()
+        if not sel:
+            return ""
+        vals = tree.item(sel[0], "values")
+        return str(vals[6]).strip() if vals and len(vals) >= 7 else ""
+
+    def _on_vault_restore_selected(self) -> None:
+        cid = self._get_selected_vault_conv_id()
+        if not cid:
+            self._append_console("⚠️ 请先在「对话防删保险箱」表格中单击选中要恢复的对话。")
+            return
+        self._run_action(f"恢复对话 {cid[:8]}", lambda: self._vault.restore_conversation(cid, force=False))
+
+    def _on_vault_export_selected(self) -> None:
+        cid = self._get_selected_vault_conv_id()
+        if not cid:
+            self._append_console("⚠️ 请先在「对话防删保险箱」表格中单击选中要导出 Markdown 的对话。")
+            return
+        self._run_action(f"导出对话 Markdown {cid[:8]}", lambda: self._vault.export_markdown(cid))
 
     def _build_quota_points(self, col_key: str, live_bucket: Any) -> List[Tuple[str, float]]:
         pts: List[Tuple[str, float]] = []
@@ -2996,6 +3379,8 @@ class AcerolaOrionApp(tk.Tk):
         guard_lines: List[str],
         ls_tail: List[str],
         silent: bool,
+        vault_st: Optional[VaultStatusReport] = None,
+        vault_rows: Optional[List[VaultSessionItem]] = None,
     ) -> None:
         if self._closing:
             return
@@ -3015,18 +3400,18 @@ class AcerolaOrionApp(tk.Tk):
                 text=f"127.0.0.1:{r.http_port} | 主进程 PID={r.main_pids}\n网络策略: {r.proxy_mode}"
             )
 
-        # Plate 2: Tier, 1.5x Audit Quick Look & Congestion
+        # Plate 2: Tier, 1.5x Preset Estimate Quick Look & Congestion
         today_str = datetime.now().strftime("%Y-%m-%d")
         today_row = next((d for d in daily if getattr(d, "local_date", "") == today_str), None)
         phantom_cnt = len(getattr(audit, "phantom_drains", []) or [])
-        phantom_tag = "CLEAN 0暗扣" if phantom_cnt == 0 else f"⚠️幽灵掉点x{phantom_cnt}"
+        phantom_tag = "0疑似空耗" if phantom_cnt == 0 else f"⚠️异常掉点x{phantom_cnt}"
         if r.ls_running:
             tier_txt = r.paid_tier_name or r.paid_tier_id or r.user_tier_id or "未知 Tier"
             self.lbl_tier_main.configure(text=f"👑 {tier_txt}", fg=ACCENT_CYAN)
             sc = r.log_stats.sidecar
             td_usd = f"${today_row.usd_agy_est:.2f}" if today_row else "$0.00"
             self.lbl_tier_sub.configure(
-                text=f"今日1.5x估: {td_usd} ({phantom_tag}) | 主429: {r.log_stats.http_429_503_count}次 (旁路{getattr(r.log_stats, 'aux_429_count', 0)}次)\n"
+                text=f"今日预设倍率估: {td_usd} ({phantom_tag}) | 主429: {r.log_stats.http_429_503_count}次 (旁路{getattr(r.log_stats, 'aux_429_count', 0)}次)\n"
                 f"旁路审查均值: {sc.avg_ms:.0f} ms (10s超时 {sc.timeout_count} 次)"
             )
         else:
@@ -3037,7 +3422,7 @@ class AcerolaOrionApp(tk.Tk):
         # Plate 3: Guillotine Process Guard
         g = r.guard
         if g.mutex_active:
-            self.lbl_guard_main.configure(text="🟢 武装就绪 · 0.00% CPU", fg=ACCENT_GREEN)
+            self.lbl_guard_main.configure(text="🟢 进程守卫运行中", fg=ACCENT_GREEN)
         else:
             self.lbl_guard_main.configure(text="⚪ 守卫未驻留", fg=ACCENT_AMBER)
         leg_warn = f" | ⚠️旧脚本:{g.legacy_pids}" if g.legacy_buggy_killer_active else ""
@@ -3077,13 +3462,13 @@ class AcerolaOrionApp(tk.Tk):
         # Ledger Tab
         if today_row:
             t_summary = (
-                f"📌 今日账单 ({today_str}): {today_row.sessions} 个会话 / {today_row.steps} 步  |  "
+                f"📌 今日用量 ({today_str}): {today_row.sessions} 个会话 / {today_row.steps} 步  |  "
                 f"Input={today_row.input_tokens:,}  Cache={today_row.cache_read_tokens:,}  Output={today_row.output_tokens:,}  |  "
-                f"1.0x原价=${today_row.usd_1x:.2f}  (0.5x首发价=${today_row.usd_intro:.2f} / 1.5x暗扣估=${today_row.usd_agy_est:.2f})\n"
-                f"🔍 验钞结论: {audit.verdict}"
+                f"1.0x原价=${today_row.usd_1x:.2f}  (0.5x估算=${today_row.usd_intro:.2f} / 1.5x预设倍率估=${today_row.usd_agy_est:.2f})\n"
+                f"🔍 快照分析: {audit.verdict}"
             )
         else:
-            t_summary = f"📌 今日暂无 Token 记录  |  🔍 验钞结论: {audit.verdict}"
+            t_summary = f"📌 今日暂无 Token 记录  |  🔍 快照分析: {audit.verdict}"
         self.lbl_auditor_banner.configure(text=t_summary)
 
         self.tree_daily.delete(*self.tree_daily.get_children())
@@ -3157,6 +3542,50 @@ class AcerolaOrionApp(tk.Tk):
         self.txt_diag.insert(tk.END, "=== [language_server.log 最新尾部流 (无锁只读 · 已剥离 glog 前缀)] ===\n")
         self.txt_diag.insert(tk.END, "\n".join(cleaned_ls_tail) + "\n")
 
+        # Vault Tab
+        if vault_st is not None and hasattr(self, "lbl_vault_banner"):
+            self._last_vault_status = vault_st
+            self._sync_vault_switch_button(vault_st.auto_backup_enabled)
+            sw_txt = (
+                "🟢 已开启 (每轮对话结束实时增量归档)"
+                if vault_st.auto_backup_enabled
+                else "⚪ 已关闭 (暂停自动备份 · 历史归档保留)"
+            )
+            self.lbl_vault_banner.configure(
+                text=(
+                    f"🗄️ 自动备份总开关: {sw_txt}  |  已保护总会话: {vault_st.total_conversations} 个 "
+                    f"(🟢在线={vault_st.active_conversations} / 🗑️已删可恢复={vault_st.deleted_conversations})  |  "
+                    f"总占用: {vault_st.total_vault_mb:.2f} MB  |  最近同步: {_fmt_cn_time(vault_st.last_sync_at)}\n"
+                    f"📂 归档目录: {vault_st.vault_dir}"
+                ),
+                fg=ACCENT_GREEN if vault_st.auto_backup_enabled else ACCENT_AMBER,
+            )
+        if vault_rows is not None and hasattr(self, "tree_vault"):
+            prev_sel_cid = self._get_selected_vault_conv_id()
+            self.tree_vault.delete(*self.tree_vault.get_children())
+            reselect_iid = None
+            for vr in vault_rows:
+                badge = "🗑️ 已删可恢复" if vr.live_status == "deleted" else "🟢 主库在线"
+                kb = (vr.conv_db_bytes + vr.brain_bytes) / 1024.0
+                size_str = f"{kb / 1024.0:.2f} MB" if kb >= 1024.0 else f"{kb:.0f} KB"
+                iid = self.tree_vault.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        badge,
+                        _fmt_cn_time(vr.last_modified_at),
+                        vr.title,
+                        vr.model_name or "-",
+                        vr.step_count,
+                        size_str,
+                        vr.conv_id,
+                    ),
+                )
+                if prev_sel_cid and vr.conv_id == prev_sel_cid:
+                    reselect_iid = iid
+            if reselect_iid is not None:
+                self.tree_vault.selection_set(reselect_iid)
+
         def _pct_txt(bid: str) -> str:
             b = bmap.get(bid)
             v = getattr(b, "remaining_pct", math.nan) if b is not None else math.nan
@@ -3192,6 +3621,9 @@ class AcerolaOrionApp(tk.Tk):
         lbl = self.__dict__.get("lbl_radar_sub")
         if lbl is not None:
             lbl.configure(wraplength=max(360, int(event.width) - 28))
+        lbl_tier = self.__dict__.get("lbl_radar_tier_alert")
+        if lbl_tier is not None:
+            lbl_tier.configure(wraplength=max(260, int(event.width) - self._px(155)))
         canvas = self.__dict__.get("radar_canvas")
         if canvas is not None and int(canvas.winfo_width()) <= 10:
             self._redraw_radar_bar(allow_defer=False)
@@ -3332,6 +3764,27 @@ class AcerolaOrionApp(tk.Tk):
                 )
         return norm_mode, norm_pin
 
+    def copy_compact_command(self) -> str:
+        txt = COMPACT_COMMAND_TEXT
+        self._last_copied_text = txt
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(txt)
+            self.update_idletasks()
+        except Exception:
+            pass
+        hud = self.__dict__.get("_hud_win")
+        if hud is not None:
+            try:
+                hud.flash_toast(f"✓ 已复制「{txt}」· 粘贴压缩防 2x 翻倍", duration_sec=1.8)
+            except Exception:
+                pass
+        if "txt_console" in self.__dict__:
+            self._append_console(
+                f"✓ 已复制上下文压缩口令「{txt}」到剪贴板 — 粘贴到当前超长窗口发送即可压缩上下文、避开 200K 双倍 (2x) 计价。"
+            )
+        return txt
+
     def set_hud_mode(self, mode: str, persist: bool = True) -> str:
         norm = normalize_hud_mode(mode)
         self._hud_mode = norm
@@ -3357,13 +3810,69 @@ class AcerolaOrionApp(tk.Tk):
         if mode == "always":
             return True
         if mode == "smart":
-            return bool(state.should_pop_smart_hud)
+            if bool(state.should_pop_smart_hud):
+                return True
+            until_m = float(self.__dict__.get("_tier_hud_until_mono", 0.0))
+            if until_m > 0.0 and time.monotonic() < until_m and (
+                bool(getattr(state, "is_near_2x", False)) or bool(getattr(state, "is_over_2x", False))
+            ):
+                return True
         return False
+
+    def _track_2x_tier_crossing(self, state: CacheRadarState) -> None:
+        cid = str(getattr(state, "conv_id", "") or "").strip().lower()
+        if not cid:
+            return
+        levels = self.__dict__.get("_notified_tier_levels")
+        if not isinstance(levels, dict):
+            levels = {}
+            self.__dict__["_notified_tier_levels"] = levels
+
+        is_2x = bool(getattr(state, "is_over_2x", False))
+        is_near = bool(getattr(state, "is_near_2x", False))
+        cur_lvl = 2 if is_2x else (1 if is_near else 0)
+        prev_lvl = int(levels.get(cid, 0))
+
+        if cur_lvl < prev_lvl:
+            levels[cid] = cur_lvl
+            if cur_lvl == 0:
+                self._tier_hud_until_mono = 0.0
+            return
+
+        if cur_lvl > prev_lvl and state.phase in (PHASE_ACTIVE, PHASE_HOT, PHASE_WARNING):
+            levels[cid] = cur_lvl
+            if len(levels) > 64:
+                oldest_cid = next(iter(levels))
+                if oldest_cid != cid:
+                    levels.pop(oldest_cid, None)
+            self._tier_hud_until_mono = time.monotonic() + 12.0
+            hud = self.__dict__.get("_hud_win")
+            if cur_lvl == 2:
+                toast_msg = f"💸 {state.context_label} 已超200K！再聊下去双倍计价(2x)"
+                log_msg = (
+                    f"💸 [200K双倍计价告警] 会话 {cid[:8]} 上下文已达 {state.context_label} (≥200K)，"
+                    f"再聊下去每轮均按 2x 双倍扣减配额！建议执行 {COMPACT_COMMAND_TEXT} 或开新窗口。"
+                )
+            else:
+                gap_lbl = format_tokens_compact(max(1, int(getattr(state, "tokens_to_2x", 0))))
+                toast_msg = f"⚠️ {state.context_label} 逼近200K！仅差{gap_lbl}触发2x计价"
+                log_msg = (
+                    f"⚠️ [逼近200K翻倍线] 会话 {cid[:8]} 上下文已达 {state.context_label}（距 200K 仅差 {gap_lbl}），"
+                    f"继续长聊即将触发 2x 双倍计价，建议适时 {COMPACT_COMMAND_TEXT}。"
+                )
+            if hud is not None:
+                try:
+                    hud.flash_toast(toast_msg, duration_sec=8.0)
+                except Exception:
+                    pass
+            if "txt_console" in self.__dict__:
+                self._append_console(log_msg)
 
     def _apply_radar_state_to_ui(self, state: CacheRadarState, force_tooltip: bool = False) -> None:
         if self.__dict__.get("_closing"):
             return
         self._radar_state = state
+        self._track_2x_tier_crossing(state)
         fg_color, bar_color, border_color = _radar_palette(state)
 
         if not self.__dict__.get("_hidden_to_tray"):
@@ -3371,8 +3880,56 @@ class AcerolaOrionApp(tk.Tk):
                 self.lbl_radar_main.configure(text=state.badge_text, fg=fg_color)
                 self.lbl_radar_sub.configure(
                     text=state.detail_text,
-                    fg=ACCENT_AMBER if (state.phase == PHASE_COLD and state.context_tokens >= LARGE_CONTEXT_HINT_TOKENS) else FG_MUTED,
+                    fg=ACCENT_ROSE
+                    if (state.phase == PHASE_COLD and getattr(state, "is_over_2x", False))
+                    else (
+                        ACCENT_AMBER
+                        if (state.phase == PHASE_COLD and state.context_tokens >= LARGE_CONTEXT_HINT_TOKENS)
+                        else FG_MUTED
+                    ),
                 )
+
+                badge_lbl = self.__dict__.get("lbl_radar_tier_badge")
+                tier_badge_txt = str(getattr(state, "tier_badge_text", "") or "")
+                if badge_lbl is not None:
+                    if tier_badge_txt:
+                        is_2x = bool(getattr(state, "is_over_2x", False))
+                        badge_lbl.configure(
+                            text=tier_badge_txt,
+                            bg="#4c0519" if is_2x else "#451a03",
+                            fg="#fda4af" if is_2x else "#fcd34d",
+                        )
+                        if not self.__dict__.get("_radar_tier_badge_packed", False):
+                            badge_lbl.pack(side=tk.LEFT, padx=(6, 4))
+                            self._radar_tier_badge_packed = True
+                    elif self.__dict__.get("_radar_tier_badge_packed", False):
+                        badge_lbl.pack_forget()
+                        self._radar_tier_badge_packed = False
+
+                tier_bar = self.__dict__.get("radar_tier_bar")
+                tier_alert_lbl = self.__dict__.get("lbl_radar_tier_alert")
+                btn_compact = self.__dict__.get("btn_copy_compact")
+                tier_alert_txt = str(getattr(state, "tier_alert_text", "") or "")
+                if tier_bar is not None and tier_alert_lbl is not None:
+                    if tier_alert_txt:
+                        is_2x = bool(getattr(state, "is_over_2x", False))
+                        bar_bg = "#2a0a18" if is_2x else "#291805"
+                        bar_bd = ACCENT_CRIMSON if is_2x else ACCENT_AMBER
+                        bar_fg = "#fda4af" if is_2x else "#fcd34d"
+                        tier_bar.configure(bg=bar_bg, highlightbackground=bar_bd)
+                        tier_alert_lbl.configure(text=tier_alert_txt, bg=bar_bg, fg=bar_fg)
+                        if btn_compact is not None:
+                            btn_compact.configure(
+                                bg=ACCENT_CRIMSON if is_2x else "#b45309",
+                                fg="#ffffff",
+                            )
+                        if not self.__dict__.get("_radar_tier_bar_packed", False):
+                            tier_bar.pack(fill=tk.X, pady=(5, 0))
+                            self._radar_tier_bar_packed = True
+                    elif self.__dict__.get("_radar_tier_bar_packed", False):
+                        tier_bar.pack_forget()
+                        self._radar_tier_bar_packed = False
+
                 self.radar_card.configure(highlightbackground=border_color)
                 self._radar_bar_fraction = state.ttl_fraction
                 self._radar_bar_color = bar_color

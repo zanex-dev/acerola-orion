@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from urllib.parse import urlsplit
 
 from .constants import (
     GUILLOTINE_MUTEX_NAME,
@@ -658,9 +659,20 @@ def _inspect_proxy_mode() -> str:
         hp = st.get("http.proxy")
         if isinstance(hp, str) and hp.strip():
             ps = st.get("http.proxySupport", "override")
-            # Strip any userinfo before displaying
-            clean_hp = hp.strip().split("@")[-1]
-            return f"自定义代理 ({clean_hp}, mode={ps})"
+            try:
+                value = hp.strip()
+                parts = urlsplit(value if "://" in value else "http://" + value)
+                scheme = (parts.scheme or "").lower()
+                host = parts.hostname or ""
+                if ":" in host:
+                    host = f"[{host}]"
+                if scheme not in {"http", "https", "socks", "socks5", "socks5h"} or not host:
+                    raise ValueError("invalid proxy scheme or host")
+                addr = f"{scheme}://{host}" + (f":{parts.port}" if parts.port else "")
+                mode = ps if ps in ("off", "on", "fallback", "override") else "custom"
+                return f"自定义代理 ({addr}, mode={mode})"
+            except (ValueError, TypeError):
+                return "自定义代理 (地址已隐藏)"
     return "直连 / 系统默认"
 
 
