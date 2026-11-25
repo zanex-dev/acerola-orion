@@ -7,7 +7,7 @@ name = "acerola-orion"
 version = "2.0.0"
 description = "7-Decimal Live Quota Telemetry, Passive KV Cache TTL Radar & 200K 2x Tier Alert, Append-Only Conversation Vault, Local Privacy-Isolated Token Ledger (Orion), and Win32 Kernel Handle Process Guard (Acerola) for Google Antigravity."
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "PolyForm-Noncommercial-1.0.0" }
 requires-python = ">=3.10"
 authors = [
     { name = "zanex", email = "310354113+zanex-dev@users.noreply.github.com" }
@@ -28,7 +28,6 @@ classifiers = [
     "Environment :: Win32 (MS Windows)",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",

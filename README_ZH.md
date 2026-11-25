@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://github.com/zanex-dev/acerola-orion/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-42%2F42%20passing-brightgreen" alt="Tests" /></a>
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v2.0.0-be123c" alt="Version v2.0.0" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-e11d48.svg" alt="License: MIT" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-e11d48.svg" alt="License: PolyForm Noncommercial 1.0.0" /></a>
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.10%2B%20(0%20deps)-3776AB.svg" alt="Python 3.10+" /></a>
   <img src="https://img.shields.io/badge/network-127.0.0.1%20loopback%20only-059669" alt="Loopback Only" />
 </p>
@@ -151,8 +151,10 @@ python -m unittest discover -s tests -v
 
 1. 本项目为独立开发的纯本地成本记账、配额观测与退出后孤儿进程回收工具，**与 Google 无任何隶属、赞助或官方关联**。
 2. 本工具全程仅读取本地文本日志与本机 `127.0.0.1` 回环状态接口，**不修改客户端安装包（`app.asar`）、不破坏数字签名、不提取任何账号凭证、不代理或篡改任何云端请求**。
-3. 本软件按 MIT 许可证“原样（AS IS）”提供，仅供个人学习与本地可观测性研究，使用者自担风险。若使用者同时或过往使用过第三方 OAuth 登录态提取器、`2API` 逆向反代池、篡改版客户端或非正规共享/转售账号，由此引发的一切账号风控或限制均与本纯本地工具无关。
+3. 本软件按 PolyForm Noncommercial License 1.0.0“原样（AS IS）”提供，仅供个人学习与本地可观测性研究，使用者自担风险。若使用者同时或过往使用过第三方 OAuth 登录态提取器、`2API` 逆向反代池、篡改版客户端或非正规共享/转售账号，由此引发的一切账号风控或限制均与本纯本地工具无关。
 
 ## 开源许可
 
-基于 [MIT License](LICENSE) 开源发布。
+本项目基于 [PolyForm Noncommercial License 1.0.0](LICENSE)（`PolyForm-Noncommercial-1.0.0`）发布 —— **个人学习、自用与非营利研究免费开放；严禁将本项目代码或 `assets/` 视觉头图及美术素材用于任何商业用途、付费服务、打包倒卖或二次售卖**，商业授权请联系作者 zanex-dev。
+
+`Required Notice: Copyright (c) 2026 zanex (zanex-dev) (https://github.com/zanex-dev/acerola-orion)`

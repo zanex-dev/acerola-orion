@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://github.com/zanex-dev/acerola-orion/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-42%2F42%20passing-brightgreen" alt="Tests" /></a>
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v2.0.0-be123c" alt="Version v2.0.0" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-e11d48.svg" alt="License: MIT" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-e11d48.svg" alt="License: PolyForm Noncommercial 1.0.0" /></a>
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.10%2B%20(0%20deps)-3776AB.svg" alt="Python 3.10+" /></a>
   <img src="https://img.shields.io/badge/network-127.0.0.1%20loopback%20only-059669" alt="Loopback Only" />
 </p>
@@ -117,8 +117,10 @@ python -m unittest discover -s tests -v
 
 1. Independent local observability, token accounting, and post-exit orphan-process cleanup utility — **not affiliated with, endorsed by, or sponsored by Google**.
 2. Operates strictly on local text logs and `127.0.0.1` loopback read-only status IPC; never modifies `app.asar`, never breaks code signatures, never touches credentials, and never proxies or alters cloud traffic.
-3. Provided "AS IS" under the MIT License at your own risk. The author assumes no responsibility for account restrictions arising from third-party OAuth token extractors, `2API` reverse proxies, modified client binaries, or shared/resold accounts.
+3. Provided "AS IS" under the PolyForm Noncommercial License 1.0.0 at your own risk. The author assumes no responsibility for account restrictions arising from third-party OAuth token extractors, `2API` reverse proxies, modified client binaries, or shared/resold accounts.
 
 ## License
 
-Released under the [MIT License](LICENSE).
+Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE) (`PolyForm-Noncommercial-1.0.0`) — **free for personal, educational, and noncommercial use; commercial use, paid SaaS, bundling, or resale of the code or `assets/` artwork is strictly prohibited** without prior written authorization from zanex-dev.
+
+`Required Notice: Copyright (c) 2026 zanex (zanex-dev) (https://github.com/zanex-dev/acerola-orion)`
