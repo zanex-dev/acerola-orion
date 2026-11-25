@@ -38,6 +38,7 @@ from .core.kernel import get_kernel
 from .guillotine import (
     install_guard_autostart,
     retire_legacy_orphan_killer,
+    rollover_daily_logs,
     run_guillotine_daemon_loop,
     start_guard_background,
     stop_guard_daemon,
@@ -199,7 +200,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_gd = sub.add_parser("guard", help="管理可选的 Windows 内核句柄断头台进程守卫")
     p_gd.add_argument(
         "action",
-        choices=["status", "start", "stop", "install", "uninstall", "daemon", "retire-legacy"],
+        choices=["status", "start", "stop", "install", "uninstall", "daemon", "retire-legacy", "rollover"],
         nargs="?",
         default="status",
     )
@@ -377,6 +378,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             out = uninstall_guard_autostart()
         elif act == "retire-legacy":
             out = retire_legacy_orphan_killer()
+        elif act == "rollover":
+            out = rollover_daily_logs(include_host_logs=True, clean_hubs=True)
         else:
             out = {"ok": False, "message": f"Unknown action: {act}"}
 

@@ -149,19 +149,33 @@ class PanelPluginHost:
     2. `add_hub_action_panel(factory_fn, *, framed=True)`
     3. `add_tray_items(items)` (accepts static `Sequence[MenuSpec]` or dynamic zero-arg builder)
     4. `add_radar_markers(fn)` / `format_header_badge(fn)`
+    5. `add_radar_action_widget(factory_fn)` / `add_radar_tier_action_widget(factory_fn)`
+    6. `add_radar_menu_items(items)` / `on_radar_state_changed(fn)` / `flash_hud_toast(text, duration_sec=1.8)`
     """
 
     def __init__(self, app: "AcerolaOrionApp") -> None:
         self._app = app
         self._tabs: Dict[str, Dict[str, Any]] = {}
         self._hub_panels: List[tk.Frame] = []
+        self._radar_action_widgets: List[tk.Frame] = []
+        self._radar_tier_action_widgets: List[tk.Frame] = []
         self._tray_sources: List[Union[List[MenuSpec], Callable[[], Sequence[MenuSpec]]]] = []
+        self._radar_menu_sources: List[Union[List[MenuSpec], Callable[[], Sequence[MenuSpec]]]] = []
         self._radar_marker_providers: List[Callable[..., Any]] = []
+        self._radar_state_listeners: List[Callable[..., Any]] = []
         self._header_badge_formatters: List[Callable[..., Any]] = []
 
     @property
     def app(self) -> "AcerolaOrionApp":
         return self._app
+
+    @property
+    def radar_action_widgets(self) -> List[tk.Frame]:
+        return list(self._radar_action_widgets)
+
+    @property
+    def radar_tier_action_widgets(self) -> List[tk.Frame]:
+        return list(self._radar_tier_action_widgets)
 
     @property
     def dpi_scale(self) -> float:
@@ -261,27 +275,32 @@ class PanelPluginHost:
                 pass
             raise
 
+        full_title = str(title or norm_key)
         btn = tk.Button(
             self._app._full_nav_bar,
-            text=str(title or norm_key),
+            text=full_title,
             command=lambda k=norm_key: self._app.select_full_tab(k),
             bg=BG_CARD,
             fg=FG_MUTED,
             activebackground=ACCENT_CRIMSON,
             activeforeground="#ffffff",
             relief="flat",
-            padx=self._app._px(14),
+            padx=self._app._px(12),
             pady=self._app._px(6),
             font=("Microsoft YaHei UI", 9, "bold"),
             cursor="hand2",
         )
-        btn.pack(side=tk.LEFT, padx=(0, 6))
 
         self._app._full_tab_frames[norm_key] = tab_frame
         self._app._full_nav_buttons[norm_key] = btn
+        register_nav = getattr(self._app, "register_full_nav_button", None)
+        if callable(register_nav):
+            register_nav(norm_key, full_title, btn)
+        else:
+            btn.pack(side=tk.LEFT, padx=(0, 6))
         self._tabs[norm_key] = {
             "key": norm_key,
-            "title": str(title or norm_key),
+            "title": full_title,
             "frame": tab_frame,
             "button": btn,
             "on_select": on_select,
@@ -476,6 +495,147 @@ class PanelPluginHost:
         if not text_cur:
             return None
         return {"text": text_cur, "fg": fg_cur, "bg": bg_cur}
+
+    # ------------------------------------------------------------------
+    # Slot 5: Radar & Tier Bar Action Widgets (0px when unused)
+    # ------------------------------------------------------------------
+    def add_radar_action_widget(self, factory_fn: Callable[..., Any]) -> tk.Frame:
+        if not callable(factory_fn):
+            raise TypeError("Radar action widget factory_fn must be callable")
+        slot = self._app.__dict__.get("radar_plugin_actions")
+        if slot is None:
+            raise RuntimeError("Radar plugin actions slot is not initialized")
+
+        had_widgets = bool(self._radar_action_widgets)
+        if not slot.winfo_manager():
+            btn_target = self._app.__dict__.get("btn_target_switch")
+            if btn_target is not None and btn_target.winfo_manager():
+                slot.pack(before=btn_target, side=tk.LEFT, padx=(0, 6))
+            else:
+                slot.pack(side=tk.LEFT, padx=(0, 6))
+
+        container = tk.Frame(slot, bg=slot.cget("bg"))
+        container.pack(side=tk.LEFT, padx=(0 if not had_widgets else 4, 0))
+
+        try:
+            _invoke_with_arity(factory_fn, (container, self), default_vararg_arity=1)
+        except Exception:
+            try:
+                container.destroy()
+            except Exception:
+                pass
+            if not self._radar_action_widgets:
+                try:
+                    slot.pack_forget()
+                except Exception:
+                    pass
+            raise
+
+        self._radar_action_widgets.append(container)
+        return container
+
+    def add_radar_tier_action_widget(self, factory_fn: Callable[..., Any]) -> tk.Frame:
+        if not callable(factory_fn):
+            raise TypeError("Radar tier action widget factory_fn must be callable")
+        slot = self._app.__dict__.get("radar_tier_plugin_actions")
+        if slot is None:
+            raise RuntimeError("Radar tier plugin actions slot is not initialized")
+
+        had_widgets = bool(self._radar_tier_action_widgets)
+        if not slot.winfo_manager():
+            btn_compact = self._app.__dict__.get("btn_copy_compact")
+            if btn_compact is not None and btn_compact.winfo_manager():
+                slot.pack(after=btn_compact, side=tk.RIGHT, padx=(6, 0))
+            else:
+                slot.pack(side=tk.RIGHT, padx=(6, 0))
+
+        container = tk.Frame(slot, bg=slot.cget("bg"))
+        container.pack(side=tk.LEFT, padx=(0 if not had_widgets else 4, 0))
+
+        try:
+            _invoke_with_arity(factory_fn, (container, self), default_vararg_arity=1)
+        except Exception:
+            try:
+                container.destroy()
+            except Exception:
+                pass
+            if not self._radar_tier_action_widgets:
+                try:
+                    slot.pack_forget()
+                except Exception:
+                    pass
+            raise
+
+        self._radar_tier_action_widgets.append(container)
+        return container
+
+    # ------------------------------------------------------------------
+    # Slot 6: Shared Radar / HUD Menu Items, State Listeners & HUD Toast
+    # ------------------------------------------------------------------
+    def add_radar_menu_items(
+        self,
+        items: Union[Sequence[MenuSpec], Callable[[], Sequence[MenuSpec]]],
+    ) -> None:
+        if callable(items):
+            self._radar_menu_sources.append(items)
+            return
+        if isinstance(items, Iterable) and not isinstance(items, (str, bytes)):
+            self._radar_menu_sources.append(list(items))
+            return
+        raise TypeError("Radar menu items must be a sequence of MenuSpec or a zero-arg callable returning them")
+
+    def collect_radar_menu_items(self) -> List[MenuSpec]:
+        collected: List[MenuSpec] = []
+        for src in self._radar_menu_sources:
+            try:
+                raw_items = src() if callable(src) else src
+            except Exception as exc:
+                logger.warning("Plugin radar menu item builder %r failed: %s", src, exc, exc_info=True)
+                continue
+            if not isinstance(raw_items, Iterable) or isinstance(raw_items, (str, bytes)):
+                continue
+            for spec in raw_items:
+                if spec is None:
+                    collected.append(None)
+                elif (
+                    isinstance(spec, tuple)
+                    and len(spec) == 2
+                    and isinstance(spec[0], str)
+                    and callable(spec[1])
+                ):
+                    collected.append((spec[0], spec[1]))
+        return collected
+
+    def on_radar_state_changed(self, fn: Callable[..., Any]) -> None:
+        if not callable(fn):
+            raise TypeError("Radar state listener must be callable")
+        self._radar_state_listeners.append(fn)
+
+    def notify_radar_state(self, state: CacheRadarState) -> None:
+        for fn in list(self._radar_state_listeners):
+            try:
+                _invoke_with_arity(fn, (state, self), default_vararg_arity=1)
+            except Exception as exc:
+                logger.warning("Plugin radar state listener %r failed: %s", fn, exc, exc_info=True)
+
+    def flash_hud_toast(self, text: str, duration_sec: float = 1.8) -> None:
+        hud = self._app.__dict__.get("_hud_win")
+        if hud is None:
+            return
+        msg = str(text or "").strip()
+        if not msg:
+            return
+        fn = getattr(hud, "flash_toast", None)
+        if callable(fn):
+            try:
+                fn(msg, duration_sec=float(duration_sec))
+            except TypeError:
+                try:
+                    fn(msg, float(duration_sec))
+                except Exception as exc:
+                    logger.warning("Plugin flash_hud_toast failed: %s", exc, exc_info=True)
+            except Exception as exc:
+                logger.warning("Plugin flash_hud_toast failed: %s", exc, exc_info=True)
 
     # ------------------------------------------------------------------
     # Lifecycle Notifications Called by AcerolaOrionApp

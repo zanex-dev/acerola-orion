@@ -52,6 +52,7 @@ class CacheRadarHudWindow(tk.Toplevel):
         sessions_provider: Optional[Callable[[], Sequence[RadarSessionCandidate]]] = None,
         on_select_target: Optional[Callable[[str, str], Any]] = None,
         on_copy_compact: Optional[Callable[[], Any]] = None,
+        extra_menu_provider: Optional[Callable[[], Sequence[Any]]] = None,
     ) -> None:
         super().__init__(master, bg=BG_ROOT)
         self.withdraw()
@@ -65,6 +66,7 @@ class CacheRadarHudWindow(tk.Toplevel):
         self._sessions_provider = sessions_provider
         self._on_select_target = on_select_target
         self._on_copy_compact = on_copy_compact
+        self._extra_menu_provider = extra_menu_provider
         self._is_shown = False
         self._positioned_once = False
         self._drag_origin: Optional[Tuple[int, int, int, int]] = None
@@ -175,6 +177,26 @@ class CacheRadarHudWindow(tk.Toplevel):
                 command=self._on_copy_compact,
             )
             self._ctx_menu.add_separator()
+
+        if self._extra_menu_provider is not None:
+            try:
+                raw_extra = list(self._extra_menu_provider() or ())
+            except Exception:
+                raw_extra = []
+            valid_extra = [
+                spec
+                for spec in raw_extra
+                if spec is None
+                or (isinstance(spec, tuple) and len(spec) == 2 and isinstance(spec[0], str) and callable(spec[1]))
+            ]
+            if valid_extra:
+                for spec in valid_extra:
+                    if spec is None:
+                        self._ctx_menu.add_separator()
+                    else:
+                        self._ctx_menu.add_command(label=spec[0], command=spec[1])
+                if valid_extra[-1] is not None:
+                    self._ctx_menu.add_separator()
 
         if self._on_select_target is not None:
             sel_fn = self._on_select_target

@@ -489,6 +489,222 @@ class PanelUiSlotsTestSuite(unittest.TestCase):
             app._apply_ui_data(rep, [], [], [], audit, [], [], silent=True)
         self.assertIn("refresh", healthy_calls)
 
+    def test_radar_slots_zero_footprint_without_plugins(self) -> None:
+        app = self._create_app()
+        app.update_idletasks()
+
+        self.assertEqual(app.radar_plugin_actions.winfo_manager(), "")
+        self.assertEqual(app.radar_tier_plugin_actions.winfo_manager(), "")
+        self.assertEqual(app.plugin_host.radar_action_widgets, [])
+        self.assertEqual(app.plugin_host.radar_tier_action_widgets, [])
+        self.assertEqual(app.plugin_host.collect_radar_menu_items(), [])
+
+        # Calling flash_hud_toast without an active HUD must be a silent no-op
+        app.plugin_host.flash_hud_toast("No HUD attached", duration_sec=1.2)
+
+    def test_radar_action_and_tier_widgets_lazy_pack_and_rollback(self) -> None:
+        app = self._create_app()
+        host = app.plugin_host
+
+        with self.assertRaises(RuntimeError):
+            host.add_radar_action_widget(lambda _c: (_ for _ in ()).throw(RuntimeError("boom")))
+        self.assertEqual(app.radar_plugin_actions.winfo_manager(), "")
+        self.assertEqual(host.radar_action_widgets, [])
+
+        with self.assertRaises(RuntimeError):
+            host.add_radar_tier_action_widget(lambda _c, _h: (_ for _ in ()).throw(RuntimeError("tier boom")))
+        self.assertEqual(app.radar_tier_plugin_actions.winfo_manager(), "")
+        self.assertEqual(host.radar_tier_action_widgets, [])
+
+        received_hosts = []
+
+        def _build_two_arg(parent: tk.Frame, h: panel_mod.PanelPluginHost) -> None:
+            received_hosts.append(h)
+            tk.Label(parent, text="Act1").pack()
+
+        host.add_radar_action_widget(_build_two_arg)
+        host.add_radar_action_widget(lambda parent: tk.Label(parent, text="Act2").pack())
+        host.add_radar_tier_action_widget(lambda parent, _h: tk.Label(parent, text="TierAct").pack())
+        app.update_idletasks()
+
+        self.assertEqual(received_hosts, [host])
+        self.assertEqual(app.radar_plugin_actions.winfo_manager(), "pack")
+        self.assertEqual(app.radar_tier_plugin_actions.winfo_manager(), "pack")
+        self.assertEqual(len(host.radar_action_widgets), 2)
+        self.assertEqual(len(host.radar_tier_action_widgets), 1)
+
+        r_ctrl = app.btn_target_switch.master
+        r_slaves = r_ctrl.pack_slaves()
+        self.assertLess(r_slaves.index(app.radar_plugin_actions), r_slaves.index(app.btn_target_switch))
+
+        tier_slaves = app.radar_tier_bar.pack_slaves()
+        self.assertEqual(tier_slaves.index(app.radar_tier_plugin_actions), tier_slaves.index(app.btn_copy_compact) + 1)
+        self.assertEqual(app.radar_tier_plugin_actions.pack_info().get("side"), "right")
+
+    def test_radar_menu_items_shared_with_target_menu_and_hud_and_toast(self) -> None:
+        from unittest import mock
+
+        from acerola_orion.ui.hud import CacheRadarHudWindow
+        from acerola_orion.ui.radar_controller import popup_target_menu
+
+        app = self._create_app()
+        host = app.plugin_host
+        invoked = []
+
+        host.add_radar_menu_items([("⚡ 静态雷达项", lambda: invoked.append("static"))])
+        host.add_radar_menu_items(lambda: [("🛰️ 动态雷达项", lambda: invoked.append("dynamic"))])
+        host.add_radar_menu_items(lambda: (_ for _ in ()).throw(RuntimeError("menu builder crash")))
+
+        with self.assertLogs("acerola_orion.ui.plugin_host", level=logging.WARNING):
+            items = host.collect_radar_menu_items()
+        self.assertEqual([it[0] for it in items if it is not None], ["⚡ 静态雷达项", "🛰️ 动态雷达项"])
+
+        with mock.patch.object(tk.Menu, "tk_popup", lambda *_a, **_kw: None):
+            with self.assertLogs("acerola_orion.ui.plugin_host", level=logging.WARNING):
+                popup_target_menu(app)
+
+        target_labels = [
+            app._target_menu.entrycget(i, "label")
+            for i in range((app._target_menu.index("end") or -1) + 1)
+            if app._target_menu.type(i) == "command"
+        ]
+        self.assertIn("⚡ 静态雷达项", target_labels)
+        self.assertIn("🛰️ 动态雷达项", target_labels)
+
+        hud = CacheRadarHudWindow(
+            master=app,
+            dpi_scale=1.0,
+            initial_pos=None,
+            on_drag_end=lambda _x, _y: None,
+            on_select_mode=lambda _m: None,
+            on_open_panel=lambda: None,
+            on_copy_compact=lambda: None,
+            on_select_target=lambda _m, _c: None,
+            extra_menu_provider=host.collect_radar_menu_items,
+        )
+        try:
+            app._hud_win = hud
+            with self.assertLogs("acerola_orion.ui.plugin_host", level=logging.WARNING):
+                hud._rebuild_ctx_menu()
+            hud_labels = [
+                hud._ctx_menu.entrycget(i, "label")
+                for i in range((hud._ctx_menu.index("end") or -1) + 1)
+                if hud._ctx_menu.type(i) == "command"
+            ]
+            self.assertIn("⚡ 静态雷达项", hud_labels)
+            self.assertIn("🛰️ 动态雷达项", hud_labels)
+            # Injected right below copy_compact at index 0
+            self.assertEqual(hud_labels[1], "⚡ 静态雷达项")
+            self.assertEqual(hud_labels[2], "🛰️ 动态雷达项")
+
+            host.flash_hud_toast("Radar Toast Ready", duration_sec=2.0)
+            self.assertEqual(hud._toast_text, "Radar Toast Ready")
+            self.assertGreater(hud._toast_until_mono, 0.0)
+        finally:
+            app._hud_win = None
+            hud.destroy()
+
+    def test_radar_state_changed_arity_isolation_and_detail_suffix_cache(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from acerola_orion.cache_radar import CacheRadarSampler, evaluate_cache_radar_state
+        from acerola_orion.ui.radar_controller import apply_radar_state_to_ui
+
+        app = self._create_app()
+        host = app.plugin_host
+        seen = []
+
+        host.on_radar_state_changed(lambda: seen.append(("zero",)))
+        host.on_radar_state_changed(lambda st: seen.append(("one", st.phase)))
+        host.on_radar_state_changed(lambda st, h: seen.append(("two", st.phase, h is host)))
+        host.on_radar_state_changed(lambda _st: (_ for _ in ()).throw(RuntimeError("listener crash")))
+
+        sample_state = evaluate_cache_radar_state(None, now_epoch=1000.0)
+        with self.assertLogs("acerola_orion.ui.plugin_host", level=logging.WARNING):
+            apply_radar_state_to_ui(app, sample_state)
+
+        self.assertIn(("zero",), seen)
+        self.assertIn(("one", sample_state.phase), seen)
+        self.assertIn(("two", sample_state.phase, True), seen)
+
+        suffix = " · [plugin-suffix]"
+
+        def _enrich(st) -> None:
+            st.detail_text = f"{st.detail_text}{suffix}"
+            st.extensions["sample_flag"] = True
+
+        bus = get_kernel().bus
+        bus.on("enrich_radar", _enrich)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sampler = CacheRadarSampler(brain_dir=Path(tmpdir))
+            st1 = sampler.sample(now_epoch=2000.0)
+            self.assertTrue(st1.detail_text.endswith(suffix))
+            self.assertEqual(sampler._cached_detail_suffix, suffix)
+
+            st2 = sampler.evaluate_cached(now_epoch=2001.0)
+            self.assertTrue(st2.detail_text.endswith(suffix))
+            self.assertTrue(st2.extensions.get("sample_flag"))
+
+            sampler._cached_extensions_conv_id = "different-conv-id"
+            st3 = sampler.evaluate_cached(now_epoch=2002.0)
+            self.assertFalse(st3.detail_text.endswith(suffix))
+            self.assertNotIn("sample_flag", st3.extensions)
+
+    def test_10_compact_tab_title_helper(self) -> None:
+        self.assertEqual(panel_mod._compact_tab_title("🔭 双星盘总览 (Astrolabe)"), "🔭 双星盘总览")
+        self.assertEqual(panel_mod._compact_tab_title("🧊 版本冷库 (Archive)"), "🧊 版本冷库")
+        self.assertEqual(panel_mod._compact_tab_title("🧩 插件中心 (Foo/Bar-2.0 & Co.)"), "🧩 插件中心")
+        self.assertEqual(panel_mod._compact_tab_title("(Archive)"), "(Archive)")
+        self.assertEqual(panel_mod._compact_tab_title("版本冷库 (中文括号)"), "版本冷库 (中文括号)")
+        self.assertEqual(panel_mod._compact_tab_title("纯中文标题"), "纯中文标题")
+
+    def test_11_full_nav_bar_responsive_tiers_and_no_clipping(self) -> None:
+        app = self._create_app()
+        host = app.plugin_host
+        host.add_tab("tasks", "🧭 任务接力板 (Task Board)", lambda parent: tk.Label(parent, text="tasks"))
+        host.add_tab("archive", "🧊 版本冷库 (Archive)", lambda parent: tk.Label(parent, text="archive"))
+
+        self.assertEqual(len(app._full_nav_order), 6)
+        self.assertEqual(host._tabs["archive"]["title"], "🧊 版本冷库 (Archive)")
+        archive_btn = app._full_nav_buttons["archive"]
+
+        # 1) Wide window: full bilingual single row
+        mode_wide = app._relayout_full_nav_bar(avail_w=1800)
+        self.assertEqual(mode_wide, "full")
+        self.assertEqual(archive_btn.cget("text"), "🧊 版本冷库 (Archive)")
+        app.update_idletasks()
+        self.assertEqual(app._full_nav_row_frames, [])
+        self.assertEqual(
+            {int(app._full_nav_buttons[k].grid_info()["row"]) for k in app._full_nav_order},
+            {0},
+        )
+
+        # 2) Default/narrow window (e.g. 960~1160px): compact Chinese single row, no clipping
+        mode_narrow = app._relayout_full_nav_bar(avail_w=1040)
+        self.assertIn(mode_narrow, ("compact", "compact_sm"))
+        self.assertEqual(archive_btn.cget("text"), "🧊 版本冷库")
+        app.update_idletasks()
+        self.assertEqual(app._full_nav_row_frames, [])
+        self.assertLessEqual(app._full_nav_bar.winfo_reqwidth(), 1040)
+
+        # 3) Very narrow window: multi-row wrap with every row fitting inside avail_w
+        mode_wrap = app._relayout_full_nav_bar(avail_w=520)
+        self.assertEqual(mode_wrap, "wrap")
+        self.assertEqual(archive_btn.cget("text"), "🧊 版本冷库")
+        app.update_idletasks()
+        self.assertGreaterEqual(len(app._full_nav_row_frames), 2)
+        for rf in app._full_nav_row_frames:
+            self.assertLessEqual(rf.winfo_reqwidth(), 520)
+        for k in app._full_nav_order:
+            self.assertEqual(app._full_nav_buttons[k].winfo_manager(), "grid")
+
+        # 4) Expanding back to wide restores full bilingual single row cleanly
+        mode_back = app._relayout_full_nav_bar(avail_w=1800)
+        self.assertEqual(mode_back, "full")
+        self.assertEqual(archive_btn.cget("text"), "🧊 版本冷库 (Archive)")
+        self.assertEqual(app._full_nav_row_frames, [])
+
 
 if __name__ == "__main__":
     unittest.main()

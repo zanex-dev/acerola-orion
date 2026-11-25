@@ -17,12 +17,21 @@ import logging
 import math
 from pathlib import Path
 import queue
+import re
 import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk
+from tkinter import font as tkfont, ttk
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+
+_TRAILING_EN_PAREN_RE = re.compile(r"\s*\([A-Za-z0-9 _\-/&.]+\)\s*$")
+
+
+def _compact_tab_title(title: str) -> str:
+    raw = str(title or "")
+    stripped = _TRAILING_EN_PAREN_RE.sub("", raw).strip()
+    return stripped or raw
 
 from .cache_radar import (
     CACHE_SAFE_TTL_SEC,
@@ -55,7 +64,7 @@ from .constants import (
     is_vault_auto_backup_enabled,
 )
 from .core.kernel import get_kernel
-from .guillotine import install_guard_autostart, uninstall_guard_autostart
+from .guillotine import install_guard_autostart, rollover_daily_logs, uninstall_guard_autostart
 from .ledger import OrionLedger
 from .rpc import read_shared_file_lines, terminate_pid_win32
 from .telemetry import (
@@ -64,6 +73,27 @@ from .telemetry import (
     invalidate_guard_probe_cache,
     load_json_safe,
 )
+
+from datetime import datetime as _panel_datetime
+import threading as _panel_threading
+
+_PANEL_ROLLOVER_LOCK = _panel_threading.Lock()
+_PANEL_LAST_ROLLOVER_DATE = ""
+
+
+def _maybe_rollover_daily_logs_inproc() -> None:
+    global _PANEL_LAST_ROLLOVER_DATE
+    today_str = _panel_datetime.now().astimezone().strftime("%Y-%m-%d")
+    with _PANEL_ROLLOVER_LOCK:
+        if _PANEL_LAST_ROLLOVER_DATE == today_str:
+            return
+        _PANEL_LAST_ROLLOVER_DATE = today_str
+    try:
+        rollover_daily_logs(include_host_logs=True, clean_hubs=False)
+    except Exception:
+        with _PANEL_ROLLOVER_LOCK:
+            if _PANEL_LAST_ROLLOVER_DATE == today_str:
+                _PANEL_LAST_ROLLOVER_DATE = ""
 from .ui.builtin_tabs import (
     apply_builtin_tabs_data,
     build_daily_spend_points,
@@ -257,6 +287,7 @@ class AcerolaOrionApp(tk.Tk):
                 sessions_provider=lambda: self._cache_radar.list_recent_sessions(limit=6),
                 on_select_target=self.set_radar_target,
                 on_copy_compact=self.copy_compact_command,
+                extra_menu_provider=self._plugin_host.collect_radar_menu_items,
             )
 
         if enable_tray and sys.platform == "win32":
@@ -643,19 +674,27 @@ class AcerolaOrionApp(tk.Tk):
             ("diag", "🩺 风控示波与日志 (Diagnostics)"),
         ]
         self._full_nav_buttons: Dict[str, tk.Button] = {}
+        self._full_nav_titles: Dict[str, str] = {}
+        self._full_nav_order: List[str] = []
+        self._full_nav_row_frames: List[tk.Frame] = []
+        self._full_nav_fonts: Dict[int, tkfont.Font] = {}
+        self._full_nav_layout_mode: str = "full"
+        self._full_nav_relayout_job: Optional[str] = None
+        self._full_nav_last_width: int = 0
+        nav_bar.bind("<Configure>", self._on_full_nav_configure)
+        nav_bar.bind("<Destroy>", self._on_full_nav_destroy)
         for key, txt in nav_specs:
             b = tk.Button(
                 nav_bar,
                 text=txt,
                 command=lambda k=key: self.select_full_tab(k),
                 relief="flat",
-                padx=self._px(14),
+                padx=self._px(12),
                 pady=self._px(6),
                 font=("Microsoft YaHei UI", 9, "bold"),
                 cursor="hand2",
             )
-            b.pack(side=tk.LEFT, padx=(0, 6))
-            self._full_nav_buttons[key] = b
+            self.register_full_nav_button(key, txt, b)
 
         self.tab_hub = tk.Frame(self.full_container, bg=BG_ROOT)
         self.tab_ledger = tk.Frame(self.full_container, bg=BG_ROOT)
@@ -673,6 +712,150 @@ class AcerolaOrionApp(tk.Tk):
         self._build_vault_tab()
         self._build_diag_tab()
         self.select_full_tab("hub")
+
+    def _get_full_nav_font(self, size: int) -> tkfont.Font:
+        f = self._full_nav_fonts.get(size)
+        if f is None:
+            f = tkfont.Font(root=self._full_nav_bar, family="Microsoft YaHei UI", size=size, weight="bold")
+            self._full_nav_fonts[size] = f
+        return f
+
+    def _on_full_nav_destroy(self, _event: Any = None) -> None:
+        job = getattr(self, "_full_nav_relayout_job", None)
+        self._full_nav_relayout_job = None
+        if job is not None:
+            try:
+                self._full_nav_bar.after_cancel(job)
+            except Exception:
+                pass
+
+    def _on_full_nav_configure(self, event: Any = None) -> None:
+        width = int(getattr(event, "width", 0) or 0)
+        if width <= 1 or width == self._full_nav_last_width:
+            return
+        self._full_nav_last_width = width
+        if self._full_nav_relayout_job is not None:
+            try:
+                self._full_nav_bar.after_cancel(self._full_nav_relayout_job)
+            except Exception:
+                pass
+        try:
+            self._full_nav_relayout_job = self._full_nav_bar.after(
+                40, lambda w=width: self._relayout_full_nav_bar(avail_w=w)
+            )
+        except Exception:
+            self._full_nav_relayout_job = None
+
+    def register_full_nav_button(self, key: str, title: str, btn: tk.Button) -> None:
+        self._full_nav_titles[key] = str(title or key)
+        self._full_nav_buttons[key] = btn
+        if key not in self._full_nav_order:
+            self._full_nav_order.append(key)
+        self._relayout_full_nav_bar()
+
+    def _relayout_full_nav_bar(self, avail_w: Optional[int] = None) -> str:
+        self._full_nav_relayout_job = None
+        nav_bar = getattr(self, "_full_nav_bar", None)
+        if nav_bar is None:
+            return self._full_nav_layout_mode
+        try:
+            if not nav_bar.winfo_exists():
+                return self._full_nav_layout_mode
+        except Exception:
+            return self._full_nav_layout_mode
+        items: List[Tuple[str, tk.Button, str]] = []
+        for k in self._full_nav_order:
+            btn = self._full_nav_buttons.get(k)
+            if btn is None:
+                continue
+            try:
+                if not btn.winfo_exists():
+                    continue
+            except Exception:
+                continue
+            items.append((k, btn, self._full_nav_titles.get(k, k)))
+        if not items:
+            return self._full_nav_layout_mode
+
+        if avail_w is None:
+            w = 0
+            try:
+                w = int(nav_bar.winfo_width())
+                if w <= 1:
+                    rw = int(self.winfo_width())
+                    if rw > 1:
+                        w = max(1, rw - self._px(32))
+            except Exception:
+                w = 0
+            avail_w = w
+        avail_w = int(avail_w)
+
+        chrome = self._px(14)
+        tiers = (
+            ("full", False, 9, self._px(12), self._px(6)),
+            ("compact", True, 9, self._px(9), self._px(5)),
+            ("compact_sm", True, 8, self._px(6), self._px(4)),
+        )
+        chosen: Optional[Tuple[str, List[str], int, int, int, List[int]]] = None
+        last_spec: Tuple[str, List[str], int, int, int, List[int]] = ("wrap", [], 8, self._px(6), self._px(4), [])
+        for mode, use_compact, fsize, pad_x, gap in tiers:
+            font_obj = self._get_full_nav_font(fsize)
+            labels = [_compact_tab_title(t) if use_compact else t for _, _, t in items]
+            widths = [font_obj.measure(lbl) + pad_x * 2 + chrome for lbl in labels]
+            total = sum(widths) + gap * max(0, len(widths) - 1)
+            last_spec = (mode, labels, fsize, pad_x, gap, widths)
+            if avail_w <= 1 or total <= avail_w:
+                chosen = last_spec
+                break
+
+        for _, btn, _ in items:
+            mgr = btn.winfo_manager()
+            if mgr == "pack":
+                btn.pack_forget()
+            elif mgr == "grid":
+                btn.grid_forget()
+        for rf in self._full_nav_row_frames:
+            try:
+                rf.destroy()
+            except Exception:
+                pass
+        self._full_nav_row_frames.clear()
+
+        if chosen is not None:
+            mode, labels, fsize, pad_x, gap, _ = chosen
+            font_spec = ("Microsoft YaHei UI", fsize, "bold")
+            for idx, ((_, btn, _), lbl) in enumerate(zip(items, labels)):
+                btn.configure(text=lbl, font=font_spec, padx=pad_x, pady=self._px(6))
+                btn.grid(in_=nav_bar, row=0, column=idx, sticky="w", padx=(0, gap if idx + 1 < len(items) else 0), pady=0)
+            self._full_nav_layout_mode = mode
+            return mode
+
+        _, labels, fsize, pad_x, gap, widths = last_spec
+        font_spec = ("Microsoft YaHei UI", fsize, "bold")
+        rows: List[List[Tuple[tk.Button, str]]] = []
+        cur_row: List[Tuple[tk.Button, str]] = []
+        cur_w = 0
+        for (_, btn, _), lbl, bw in zip(items, labels, widths):
+            if cur_row and cur_w + gap + bw > avail_w:
+                rows.append(cur_row)
+                cur_row = [(btn, lbl)]
+                cur_w = bw
+            else:
+                cur_w = (cur_w + gap + bw) if cur_row else bw
+                cur_row.append((btn, lbl))
+        if cur_row:
+            rows.append(cur_row)
+
+        row_gap = self._px(4)
+        for r_idx, r_items in enumerate(rows):
+            rf = tk.Frame(nav_bar, bg=BG_ROOT)
+            rf.grid(row=r_idx, column=0, sticky="w", pady=(0, row_gap if r_idx + 1 < len(rows) else 0))
+            self._full_nav_row_frames.append(rf)
+            for c_idx, (btn, lbl) in enumerate(r_items):
+                btn.configure(text=lbl, font=font_spec, padx=pad_x, pady=self._px(5))
+                btn.grid(in_=rf, row=0, column=c_idx, sticky="w", padx=(0, gap if c_idx + 1 < len(r_items) else 0), pady=0)
+        self._full_nav_layout_mode = "wrap"
+        return "wrap"
 
     # Built-in component & tab builder delegates (preserved for subclass/test compatibility)
     def _make_instrument_plate(self, parent: tk.Widget, heading: str) -> Tuple[tk.Frame, tk.Label, tk.Label]:
@@ -826,6 +1009,7 @@ class AcerolaOrionApp(tk.Tk):
 
         def worker() -> None:
             try:
+                _maybe_rollover_daily_logs_inproc()
                 rep = collect_telemetry(include_guard_check=True)
                 poll_state["offline"] = (not rep.ls_running) or (not rep.quota_buckets)
                 self._ledger.record_quota_from_telemetry(rep, event_type="panel_poll", min_interval_sec=300.0)

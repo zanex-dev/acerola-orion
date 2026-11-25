@@ -72,10 +72,10 @@ def refresh_diag_tab_data(
     sc = ls.sidecar
     app.lbl_diag_summary.configure(
         text=(
-            f"旁路安全审查 (sir_flash_lite / severe_internal_risks_agy): 累计 {sc.eval_count} 次 "
+            f"旁路安全审查 (sir_flash_lite / severe_internal_risks_agy): 今日 {sc.eval_count} 次 "
             f"(一审失败={getattr(sc, 'stage1_fail_count', 0)} / 二审失败={getattr(sc, 'stage2_fail_count', 0)}) | "
             f"均值 {sc.avg_ms:.0f} ms | 峰值 {sc.max_ms:.0f} ms | 10s超时 {sc.timeout_count} 次\n"
-            f"容量耗尽排队: {ls.capacity_exhausted_count} 次 | 主对话 429/503: {ls.http_429_503_count} 次 | "
+            f"今日容量耗尽排队: {ls.capacity_exhausted_count} 次 | 主对话 429/503: {ls.http_429_503_count} 次 | "
             f"旁路杂项 429: {getattr(ls, 'aux_429_count', 0)} 次 | 埋点超时: {getattr(ls, 'telemetry_timeout_count', 0)} 次 | "
             f"网络断流: {ls.network_changed_count} 次 | 残留 hub: {r.stale_hub_files} 个"
         )

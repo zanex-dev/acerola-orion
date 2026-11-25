@@ -190,6 +190,18 @@ def popup_target_menu(app: Any) -> None:
                 command=lambda cid=cand.conv_id: app.set_radar_target(TARGET_MODE_PINNED, cid),
             )
 
+    host = app.__dict__.get("_plugin_host")
+    if host is not None and hasattr(host, "collect_radar_menu_items"):
+        extra_items = host.collect_radar_menu_items()
+        if extra_items:
+            if extra_items[0] is not None:
+                menu.add_separator()
+            for spec in extra_items:
+                if spec is None:
+                    menu.add_separator()
+                else:
+                    menu.add_command(label=spec[0], command=spec[1])
+
     try:
         bx = int(btn.winfo_rootx())
         by = int(btn.winfo_rooty() + btn.winfo_height() + 2)
@@ -407,6 +419,9 @@ def apply_radar_state_to_ui(app: Any, state: CacheRadarState, force_tooltip: boo
                     bar_fg = "#fda4af" if is_2x else "#fcd34d"
                     tier_bar.configure(bg=bar_bg, highlightbackground=bar_bd)
                     tier_alert_lbl.configure(text=tier_alert_txt, bg=bar_bg, fg=bar_fg)
+                    tier_plugin_slot = app.__dict__.get("radar_tier_plugin_actions")
+                    if tier_plugin_slot is not None:
+                        tier_plugin_slot.configure(bg=bar_bg)
                     if btn_compact is not None:
                         btn_compact.configure(
                             bg=ACCENT_CRIMSON if is_2x else "#b45309",
@@ -441,6 +456,10 @@ def apply_radar_state_to_ui(app: Any, state: CacheRadarState, force_tooltip: boo
                 app._last_sent_tooltip = full_tip
                 app._last_tray_tip_mono = now_m
                 tray.update_tooltip(full_tip)
+
+    host = app.__dict__.get("_plugin_host")
+    if host is not None and hasattr(host, "notify_radar_state"):
+        host.notify_radar_state(state)
 
 
 def radar_loops_needed(app: Any) -> bool:

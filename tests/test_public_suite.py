@@ -356,6 +356,137 @@ class AcerolaOrionPublicSuite(unittest.TestCase):
         self.assertEqual(st3.http_429_503_count, 1)
         self.assertEqual(st3.capacity_exhausted_count, 0)
 
+    def test_06b_daily_log_scope_midnight_reset_and_timeout_dedup(self) -> None:
+        ls_log = self.tmp_path / "daily_language_server.log"
+        main_log = self.tmp_path / "daily_main.log"
+        telemetry.reset_log_cursor_cache()
+
+        # 1) Cross-day filtering (including glog prefix + continuation line inheritance)
+        ls_log.write_text(
+            "I1124 23:58:00 runner.go:8] Monitor sir_flash_lite FINISHED: triggered=false, duration=250ms\n"
+            "ERROR: logging before google.Init: E1124 23:59:00 client.go:1] HTTP/2 429 Too Many Requests\n"
+            "  continuation line without timestamp HTTP/2 503 Service Unavailable\n"
+            "E1124 23:59:30 mon.go:42] LLM_MONITOR_LLM_CALL_TIMEOUT: old timeout\n"
+            "I1125 00:01:00 runner.go:8] Monitor sir_flash_lite FINISHED: triggered=false, duration=400ms\n"
+            "ERROR: logging before google.Init: E1125 00:02:00 client.go:1] HTTP/2 429 Too Many Requests\n"
+            "  continuation line on active date status=503\n",
+            encoding="utf-8",
+        )
+        main_log.write_text(
+            "[2026-11-24 23:59:50.100] [main] ERR_NETWORK_CHANGED\n"
+            "  continuation yesterday ERR_NETWORK_CHANGED\n"
+            "[2026-11-25 00:00:10.200] [main] ERR_NETWORK_CHANGED\n"
+            "  continuation today ERR_NETWORK_CHANGED\n",
+            encoding="utf-8",
+        )
+
+        st_today_inc = telemetry.analyze_logs_incremental(ls_log, main_log, active_date="2026-11-25")
+        st_today_full = telemetry.analyze_logs(
+            rpc.read_shared_file_lines(ls_log),
+            rpc.read_shared_file_lines(main_log),
+            active_date="2026-11-25",
+        )
+        self.assertEqual(st_today_inc, st_today_full)
+        self.assertEqual(st_today_inc.sidecar.eval_count, 1)
+        self.assertAlmostEqual(st_today_inc.sidecar.avg_ms, 400.0, places=1)
+        self.assertEqual(st_today_inc.sidecar.timeout_count, 0)
+        self.assertEqual(st_today_inc.http_429_503_count, 2)
+        self.assertEqual(st_today_inc.network_changed_count, 2)
+
+        # active_date=None preserves all historical lines
+        st_all = telemetry.analyze_logs(
+            rpc.read_shared_file_lines(ls_log),
+            rpc.read_shared_file_lines(main_log),
+        )
+        self.assertEqual(st_all.sidecar.eval_count, 2)
+        self.assertEqual(st_all.sidecar.timeout_count, 1)
+        self.assertEqual(st_all.http_429_503_count, 4)
+        self.assertEqual(st_all.network_changed_count, 4)
+
+        # 2) Midnight cursor auto-reset when active_date rolls to next day (even without file growth)
+        st_next_zero = telemetry.analyze_logs_incremental(ls_log, main_log, active_date="2026-11-26")
+        self.assertEqual(st_next_zero.sidecar.eval_count, 0)
+        self.assertEqual(st_next_zero.http_429_503_count, 0)
+        self.assertEqual(st_next_zero.network_changed_count, 0)
+
+        with open(ls_log, "a", encoding="utf-8") as f:
+            f.write("I1126 00:00:05 runner.go:8] Monitor severe_internal_risks_agy FINISHED: duration=120ms\n")
+        with open(main_log, "a", encoding="utf-8") as f:
+            f.write("[2026-11-26 00:00:06.000] [main] ERR_NETWORK_CHANGED\n")
+        st_next_app = telemetry.analyze_logs_incremental(ls_log, main_log, active_date="2026-11-26")
+        self.assertEqual(st_next_app.sidecar.eval_count, 1)
+        self.assertAlmostEqual(st_next_app.sidecar.avg_ms, 120.0, places=1)
+        self.assertEqual(st_next_app.network_changed_count, 1)
+
+        # Rotation/truncation mid-day preserves active_date filtering
+        ls_log.write_text(
+            "I1125 23:59:59 client.go:1] HTTP/2 429 Too Many Requests\n"
+            "I1126 00:05:00 client.go:1] status=503\n",
+            encoding="utf-8",
+        )
+        st_rot = telemetry.analyze_logs_incremental(ls_log, main_log, active_date="2026-11-26")
+        self.assertEqual(st_rot.http_429_503_count, 1)
+
+        # 3) 10s sidecar timeout deduplication (forward/reversed <=4 lines, distance >4, standalone, cross-chunk)
+        # Forward pair (distance=1) + reversed pair (distance=4) + non-paired (distance=5) + standalone
+        dedup_lines = [
+            "E1126 01:00:00 mon.go:10] Monitor sir_flash_lite FINISHED: Failed: context deadline exceeded, duration=10.01s",
+            "E1126 01:00:00 mon.go:11] LLM_MONITOR_LLM_CALL_TIMEOUT: sir_flash_lite exceeded 10s",
+            "I1126 01:00:10 info.go:1] noise",
+            "E1126 01:01:00 mon.go:11] LLM_MONITOR_LLM_CALL_TIMEOUT: stage2 exceeded 10s",
+            "I1126 01:01:00 info.go:2] noise 1",
+            "I1126 01:01:00 info.go:3] noise 2",
+            "I1126 01:01:00 info.go:4] noise 3",
+            "E1126 01:01:00 mon.go:10] Monitor severe_internal_risks_agy FINISHED: Failed: context deadline exceeded, duration=10.02s",
+            "I1126 01:02:00 info.go:5] gap",
+            "E1126 01:03:00 mon.go:10] Monitor sir_flash_lite FINISHED: Failed: context deadline exceeded, duration=10.03s",
+            "I1126 01:03:00 info.go:6] noise 1",
+            "I1126 01:03:00 info.go:7] noise 2",
+            "I1126 01:03:00 info.go:8] noise 3",
+            "I1126 01:03:00 info.go:9] noise 4",
+            "E1126 01:03:01 mon.go:11] LLM_MONITOR_LLM_CALL_TIMEOUT: separate timeout (distance=5)",
+            'E1126 01:03:02 clearcut.go:1] Post "https://play.googleapis.com/log": context deadline exceeded',
+        ]
+        st_dedup = telemetry.analyze_logs(dedup_lines, [], active_date="2026-11-26")
+        self.assertEqual(st_dedup.sidecar.timeout_count, 4)  # 1 (fwd) + 1 (rev d=4) + 2 (d=5 not paired)
+        self.assertEqual(st_dedup.telemetry_timeout_count, 1)
+
+        # Standalone single lines remain 1 each
+        st_single_a = telemetry.analyze_logs(
+            ["E1126 02:00:00 mon.go:10] Monitor sir_flash_lite FINISHED: Failed: context deadline exceeded, duration=10s"],
+            [],
+            active_date="2026-11-26",
+        )
+        st_single_b = telemetry.analyze_logs(
+            ["E1126 02:00:00 mon.go:11] LLM_MONITOR_LLM_CALL_TIMEOUT: single"],
+            [],
+            active_date="2026-11-26",
+        )
+        self.assertEqual(st_single_a.sidecar.timeout_count, 1)
+        self.assertEqual(st_single_b.sidecar.timeout_count, 1)
+
+        # Cross-chunk incremental pairing
+        pair_log = self.tmp_path / "pair_ls.log"
+        empty_main = self.tmp_path / "pair_main.log"
+        empty_main.write_text("", encoding="utf-8")
+        pair_log.write_text(
+            "E1126 03:00:00 mon.go:11] LLM_MONITOR_LLM_CALL_TIMEOUT: chunk1\n",
+            encoding="utf-8",
+        )
+        st_c1 = telemetry.analyze_logs_incremental(pair_log, empty_main, active_date="2026-11-26")
+        self.assertEqual(st_c1.sidecar.timeout_count, 1)
+        with open(pair_log, "a", encoding="utf-8") as f:
+            f.write(
+                "I1126 03:00:00 info.go:1] noise\n"
+                "E1126 03:00:00 mon.go:10] Monitor sir_flash_lite FINISHED: Failed: context deadline exceeded, duration=10s\n"
+            )
+        st_c2 = telemetry.analyze_logs_incremental(pair_log, empty_main, active_date="2026-11-26")
+        self.assertEqual(st_c2.sidecar.timeout_count, 1)
+        self.assertEqual(
+            st_c2,
+            telemetry.analyze_logs(rpc.read_shared_file_lines(pair_log), [], active_date="2026-11-26"),
+        )
+
     def test_07_rpc_deadline_slow_drip_connection_close_and_nonfinite(self) -> None:
         srv = socket.socket()
         srv.bind(("127.0.0.1", 0))

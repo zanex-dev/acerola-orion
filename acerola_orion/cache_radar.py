@@ -692,6 +692,7 @@ class CacheRadarSampler:
         self._selected_smart_guarded: bool = False
         self._cached_extensions: Dict[str, Any] = {}
         self._cached_extensions_conv_id: str = ""
+        self._cached_detail_suffix: str = ""
         self.tail_read_count: int = 0
 
     def get_target(self) -> Tuple[str, str]:
@@ -983,10 +984,17 @@ class CacheRadarSampler:
             pinned_conv_id=pin_ref,
             smart_guarded=guard_ref,
         )
+        base_detail = state.detail_text
         get_kernel().bus.emit("enrich_radar", state)
+        detail_suffix = ""
+        if base_detail and state.detail_text.startswith(base_detail) and len(state.detail_text) > len(base_detail):
+            detail_suffix = state.detail_text[len(base_detail):]
+        elif not base_detail and state.detail_text:
+            detail_suffix = state.detail_text
         with self._lock:
             self._cached_extensions = dict(state.extensions)
             self._cached_extensions_conv_id = state.conv_id
+            self._cached_detail_suffix = detail_suffix
         return state
 
     def evaluate_cached(self, now_epoch: Optional[float] = None) -> CacheRadarState:
@@ -1002,6 +1010,7 @@ class CacheRadarSampler:
             guard_ref = self._selected_smart_guarded
             cached_ext = dict(self._cached_extensions)
             cached_ext_cid = self._cached_extensions_conv_id
+            cached_suffix = self._cached_detail_suffix
 
         state = evaluate_cache_radar_state(
             snap_ref,
@@ -1027,6 +1036,9 @@ class CacheRadarSampler:
                 pinned_conv_id=pin_ref,
                 smart_guarded=False,
             )
-        if cached_ext and state.conv_id == cached_ext_cid:
-            state.extensions.update(cached_ext)
+        if state.conv_id == cached_ext_cid:
+            if cached_ext:
+                state.extensions.update(cached_ext)
+            if cached_suffix and not state.detail_text.endswith(cached_suffix):
+                state.detail_text = f"{state.detail_text}{cached_suffix}"
         return state

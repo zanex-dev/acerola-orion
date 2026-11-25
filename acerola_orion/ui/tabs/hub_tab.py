@@ -82,6 +82,8 @@ def build_hub_tab(app: Any) -> None:
     r_ctrl = tk.Frame(r_top, bg=BG_CARD)
     r_ctrl.pack(side=tk.RIGHT)
 
+    app.radar_plugin_actions = tk.Frame(r_ctrl, bg=BG_CARD)
+
     app.btn_target_switch = tk.Button(
         r_ctrl,
         text="🧠 守大窗 ▾",
@@ -190,6 +192,7 @@ def build_hub_tab(app: Any) -> None:
         cursor="hand2",
     )
     app.btn_copy_compact.pack(side=tk.RIGHT, padx=(8, 0))
+    app.radar_tier_plugin_actions = tk.Frame(app.radar_tier_bar, bg="#2a0a18")
     app.lbl_radar_tier_alert = tk.Label(
         app.radar_tier_bar,
         text="",

@@ -306,8 +306,33 @@ _LOG_HTTP_ERR_RE = re.compile(
     r"|rateLimitExceeded|RESOURCE_EXHAUSTED|\bcode\s*=\s*Unavailable\b|\brpc\s+error:.*\bUnavailable\b",
     re.IGNORECASE,
 )
+_LOG_MON_TIMEOUT_RE = re.compile(
+    r"Monitor\s+(?:sir_flash_lite|severe_internal_risks_agy)\s+FINISHED:.*context deadline exceeded"
+)
+_LOG_LS_DATE_RE = re.compile(r"^[IWEF](\d{4})\s")
+_LOG_MAIN_DATE_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2})")
+_ISO_DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+_TIMEOUT_PAIR_MAX_LINE_DIST = 4
 
 GLOG_PREINIT_PREFIX = "ERROR: logging before google.Init: "
+
+
+def _normalize_active_date(active_date: Optional[str]) -> Optional[str]:
+    if not active_date:
+        return None
+    cleaned = str(active_date).strip()
+    return cleaned or None
+
+
+def _active_date_to_mmdd(active_date: Optional[str]) -> Optional[str]:
+    if not active_date:
+        return None
+    m = _ISO_DATE_RE.match(active_date)
+    if m:
+        return f"{m.group(2)}{m.group(3)}"
+    if len(active_date) == 4 and active_date.isdigit():
+        return active_date
+    return None
 
 
 def strip_glog_init_noise(line: str) -> str:
@@ -334,6 +359,8 @@ class _LsLogCursorState:
     file_id: Optional[Tuple[int, int, int]] = None
     offset: int = 0
     carry_bytes: bytes = b""
+    active_date: Optional[str] = None
+    in_active_date: bool = True
     ls_log_lines: int = 0
     capacity_exhausted_count: int = 0
     http_429_503_count: int = 0
@@ -347,12 +374,15 @@ class _LsLogCursorState:
     stage1_fail_count: int = 0
     stage2_fail_count: int = 0
     recent_timeouts: List[str] = field(default_factory=list)
+    pending_timeouts: List[Tuple[str, int]] = field(default_factory=list)
 
     def copy(self) -> "_LsLogCursorState":
         return _LsLogCursorState(
             file_id=self.file_id,
             offset=self.offset,
             carry_bytes=self.carry_bytes,
+            active_date=self.active_date,
+            in_active_date=self.in_active_date,
             ls_log_lines=self.ls_log_lines,
             capacity_exhausted_count=self.capacity_exhausted_count,
             http_429_503_count=self.http_429_503_count,
@@ -366,6 +396,7 @@ class _LsLogCursorState:
             stage1_fail_count=self.stage1_fail_count,
             stage2_fail_count=self.stage2_fail_count,
             recent_timeouts=list(self.recent_timeouts),
+            pending_timeouts=list(self.pending_timeouts),
         )
 
 
@@ -374,6 +405,8 @@ class _MainLogCursorState:
     file_id: Optional[Tuple[int, int, int]] = None
     offset: int = 0
     carry_bytes: bytes = b""
+    active_date: Optional[str] = None
+    in_active_date: bool = True
     network_changed_count: int = 0
 
     def copy(self) -> "_MainLogCursorState":
@@ -381,14 +414,26 @@ class _MainLogCursorState:
             file_id=self.file_id,
             offset=self.offset,
             carry_bytes=self.carry_bytes,
+            active_date=self.active_date,
+            in_active_date=self.in_active_date,
             network_changed_count=self.network_changed_count,
         )
 
 
 def _fold_ls_lines(st: _LsLogCursorState, lines: Sequence[str]) -> None:
     """Fold log lines into `_LsLogCursorState` using fast C substring pre-filters before regex."""
-    st.ls_log_lines += len(lines)
+    target_mmdd = _active_date_to_mmdd(st.active_date)
     for line in lines:
+        if target_mmdd is not None:
+            clean_head = strip_glog_init_noise(line)
+            m_date = _LOG_LS_DATE_RE.match(clean_head)
+            if m_date:
+                st.in_active_date = m_date.group(1) == target_mmdd
+            if not st.in_active_date:
+                continue
+
+        st.ls_log_lines += 1
+
         if "FINISHED:" in line and "Monitor" in line:
             if "Failed:" in line:
                 if "Monitor sir_flash_lite FINISHED:" in line:
@@ -432,21 +477,60 @@ def _fold_ls_lines(st: _LsLogCursorState, lines: Sequence[str]) -> None:
             else:
                 st.http_429_503_count += 1
 
-        if "LLM_MONITOR_LLM_CALL_TIMEOUT" in line or "context deadline exceeded" in line:
+        has_llm_timeout = "LLM_MONITOR_LLM_CALL_TIMEOUT" in line
+        has_deadline = "context deadline exceeded" in line
+        if has_llm_timeout or has_deadline:
             if "play.googleapis.com/log" in line or "firebaselogging" in line:
                 st.telemetry_timeout_count += 1
             else:
-                short = strip_glog_init_noise(line.strip())
-                if len(short) > 140:
-                    short = short[-140:]
-                st.timeout_count += 1
-                st.recent_timeouts.append(short)
-                if len(st.recent_timeouts) > 8:
-                    del st.recent_timeouts[:-4]
+                is_mon_fin = (
+                    has_deadline
+                    and "FINISHED:" in line
+                    and "Monitor" in line
+                    and bool(_LOG_MON_TIMEOUT_RE.search(line))
+                )
+                pair_kind: Optional[str] = None
+                if is_mon_fin and not has_llm_timeout:
+                    pair_kind = "mon_fin"
+                elif has_llm_timeout and not is_mon_fin:
+                    pair_kind = "llm_timeout"
+
+                cur_line = st.ls_log_lines
+                if st.pending_timeouts:
+                    st.pending_timeouts = [
+                        item
+                        for item in st.pending_timeouts
+                        if (cur_line - item[1]) <= _TIMEOUT_PAIR_MAX_LINE_DIST
+                    ]
+                paired = False
+                if pair_kind is not None:
+                    want_kind = "llm_timeout" if pair_kind == "mon_fin" else "mon_fin"
+                    for idx, (p_kind, _p_line) in enumerate(st.pending_timeouts):
+                        if p_kind == want_kind:
+                            del st.pending_timeouts[idx]
+                            paired = True
+                            break
+                if not paired:
+                    if pair_kind is not None:
+                        st.pending_timeouts.append((pair_kind, cur_line))
+                    short = strip_glog_init_noise(line.strip())
+                    if len(short) > 140:
+                        short = short[-140:]
+                    st.timeout_count += 1
+                    st.recent_timeouts.append(short)
+                    if len(st.recent_timeouts) > 8:
+                        del st.recent_timeouts[:-4]
 
 
 def _fold_main_lines(st: _MainLogCursorState, lines: Sequence[str]) -> None:
+    target_date = st.active_date
     for ml in lines:
+        if target_date is not None:
+            m_date = _LOG_MAIN_DATE_RE.match(ml)
+            if m_date:
+                st.in_active_date = m_date.group(1) == target_date
+            if not st.in_active_date:
+                continue
         if "ERR_NETWORK_CHANGED" in ml:
             st.network_changed_count += 1
 
@@ -477,9 +561,11 @@ def _build_congestion_stats(ls_st: _LsLogCursorState, main_st: _MainLogCursorSta
 def analyze_logs(
     ls_lines: Sequence[str],
     main_lines: Sequence[str],
+    active_date: Optional[str] = None,
 ) -> LogCongestionStats:
-    ls_st = _LsLogCursorState()
-    main_st = _MainLogCursorState()
+    norm_date = _normalize_active_date(active_date)
+    ls_st = _LsLogCursorState(active_date=norm_date)
+    main_st = _MainLogCursorState(active_date=norm_date)
     _fold_ls_lines(ls_st, ls_lines)
     _fold_main_lines(main_st, main_lines)
     return _build_congestion_stats(ls_st, main_st)
@@ -511,7 +597,7 @@ def _advance_text_cursor(
         max_tail_bytes=max_tail_bytes,
     )
     if reset:
-        st = new_state_fn(file_id=fid, offset=new_off)
+        st = new_state_fn(file_id=fid, offset=new_off, active_date=st.active_date)
     else:
         st.file_id = fid
         st.offset = new_off
@@ -535,19 +621,23 @@ def analyze_logs_incremental(
     main_log_path: Path,
     ls_max_tail_bytes: int = 4 * 1024 * 1024,
     main_max_tail_bytes: int = 2 * 1024 * 1024,
+    active_date: Optional[str] = None,
 ) -> LogCongestionStats:
     """
     Incrementally scan `language_server.log` and `main.log` using `(file_id, offset)` cursors.
-    When neither file grew, zero bytes are read or regex-scanned. Rotations/truncations auto-reset.
+    When neither file grew, zero bytes are read or regex-scanned. Rotations/truncations and
+    cross-midnight `active_date` transitions auto-reset.
     """
+    norm_date = _normalize_active_date(active_date)
     key = (
         os.path.normcase(os.path.abspath(str(ls_log_path))),
         os.path.normcase(os.path.abspath(str(main_log_path))),
     )
     with _LOG_CURSOR_LOCK:
         entry = _LOG_CURSOR.get(key)
-        if entry is None:
-            ls_st, main_st = _LsLogCursorState(), _MainLogCursorState()
+        if entry is None or entry[0].active_date != norm_date or entry[1].active_date != norm_date:
+            ls_st = _LsLogCursorState(active_date=norm_date)
+            main_st = _MainLogCursorState(active_date=norm_date)
         else:
             ls_st, main_st = entry
         ls_st, ls_snap = _advance_text_cursor(
@@ -681,16 +771,22 @@ def _inspect_proxy_mode() -> str:
 
 
 def collect_telemetry(include_guard_check: bool = True) -> OrionTelemetryReport:
-    now_str = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
+    now_local = datetime.now().astimezone()
+    now_str = now_local.strftime("%Y-%m-%d %H:%M:%S %z")
+    today_date = now_local.strftime("%Y-%m-%d")
     entries = snapshot_processes_fast()
     ls_state = inspect_active_ls(include_cmdline=True, entries=entries)
 
     if read_shared_file_lines is _ORIG_READ_SHARED_FILE_LINES:
-        log_stats = analyze_logs_incremental(get_ls_log_path(), get_main_log_path())
+        log_stats = analyze_logs_incremental(
+            get_ls_log_path(),
+            get_main_log_path(),
+            active_date=today_date,
+        )
     else:
         ls_lines = read_shared_file_lines(get_ls_log_path())
         main_lines = read_shared_file_lines(get_main_log_path(), max_tail_bytes=2 * 1024 * 1024)
-        log_stats = analyze_logs(ls_lines, main_lines)
+        log_stats = analyze_logs(ls_lines, main_lines, active_date=today_date)
 
     proxy_mode = _inspect_proxy_mode()
     guard = probe_guard_status(entries=entries) if include_guard_check else GuardStatusView()

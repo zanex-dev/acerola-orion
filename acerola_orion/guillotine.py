@@ -22,6 +22,8 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+import re as _re
+
 from .constants import (
     GUILLOTINE_MUTEX_NAME,
     SCHEDULED_TASK_NAME,
@@ -30,6 +32,9 @@ from .constants import (
     get_config_path,
     get_data_dir,
     get_guillotine_log_path,
+    get_ls_log_path,
+    get_main_log_path,
+    interprocess_file_lock,
     load_vault_config,
 )
 from .core.kernel import get_kernel
@@ -38,6 +43,7 @@ from .rpc import (
     SYNCHRONIZE,
     WAIT_OBJECT_0,
     acquire_single_instance_mutex,
+    clean_stale_hub_files,
     close_handle_safe,
     discover_hub_endpoint,
     find_antigravity_process_tree,
@@ -46,6 +52,7 @@ from .rpc import (
     open_process_handle,
     process_exists_win32,
     query_process_image_path_win32,
+    read_shared_file_lines,
     release_and_close_mutex,
     snapshot_processes_fast,
     terminate_owned_handle,
@@ -54,6 +61,12 @@ from .rpc import (
 from .telemetry import collect_telemetry, load_json_safe
 
 _ORIG_OPEN_PROCESS_HANDLE = open_process_handle
+GUILLOTINE_LOG_MAX_BYTES = 512 * 1024
+_HOST_LOG_MAX_READ_BYTES = 32 * 1024 * 1024
+_GUILLOTINE_LINE_DATE_RE = _re.compile(r"^\[(\d{4}-\d{2}-\d{2})\b")
+_HOST_ISO_DATE_RE = _re.compile(r"^\s*[\[\(\{]?[IWEFD]?(\d{4})[-/](\d{2})[-/](\d{2})(?:[T\s\],:]|$)")
+_HOST_GLOG_DATE_RE = _re.compile(r"^[IWEF](\d{2})(\d{2})\s+\d{2}:\d{2}:\d{2}")
+_HOST_COMPACT_DATE_RE = _re.compile(r"^\s*\[?[IWEFD]?(\d{4})(\d{2})(\d{2})[T\s_]")
 
 
 def _guard_pid_file() -> Path:
@@ -64,17 +77,332 @@ def _guard_stop_file() -> Path:
     return get_data_dir() / "guard.stop"
 
 
+def get_log_archive_dir() -> Path:
+    p = get_data_dir() / "log_archives"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _archive_state_path() -> Path:
+    return get_log_archive_dir() / "daily_archive_state.json"
+
+
+def _validate_ymd(year: int, month: int, day: int) -> Optional[str]:
+    try:
+        return datetime(year, month, day).strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def _extract_guillotine_line_date(line: str) -> Optional[str]:
+    m = _GUILLOTINE_LINE_DATE_RE.match(line)
+    if not m:
+        return None
+    raw = m.group(1)
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def _extract_host_log_line_date(line: str, ref_dt: datetime) -> Optional[str]:
+    m = _HOST_ISO_DATE_RE.match(line)
+    if m:
+        return _validate_ymd(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+    m_glog = _HOST_GLOG_DATE_RE.match(line)
+    if m_glog:
+        mm, dd = int(m_glog.group(1)), int(m_glog.group(2))
+        year = ref_dt.year
+        if (mm, dd) > (ref_dt.month, ref_dt.day):
+            year -= 1
+        res = _validate_ymd(year, mm, dd)
+        if res is not None:
+            return res
+        return _validate_ymd(year - 1, mm, dd)
+
+    m_cmp = _HOST_COMPACT_DATE_RE.match(line)
+    if m_cmp:
+        return _validate_ymd(int(m_cmp.group(1)), int(m_cmp.group(2)), int(m_cmp.group(3)))
+    return None
+
+
+def _next_archive_part_path(day_dir: Path, stem: str, suffix: str = ".log") -> Path:
+    idx = 1
+    while True:
+        cand = day_dir / f"{stem}_part{idx}{suffix}"
+        if not cand.exists():
+            return cand
+        idx += 1
+
+
+def _write_archive_zero_overwrite(
+    day_dir: Path,
+    filename: str,
+    content: str,
+    *,
+    force_part: bool = False,
+) -> Path:
+    day_dir.mkdir(parents=True, exist_ok=True)
+    primary = day_dir / filename
+    if force_part or primary.exists():
+        stem = primary.stem
+        suffix = primary.suffix or ".log"
+        target = _next_archive_part_path(day_dir, stem, suffix)
+    else:
+        target = primary
+    atomic_write_text(target, content, encoding="utf-8")
+    return target
+
+
+def _rollover_guillotine_log_locked(
+    log_path: Path,
+    *,
+    now_dt: datetime,
+    max_bytes: int = GUILLOTINE_LOG_MAX_BYTES,
+) -> Dict[str, Any]:
+    today_str = now_dt.strftime("%Y-%m-%d")
+    res: Dict[str, Any] = {
+        "archived_dates": [],
+        "archived_files": [],
+        "archived_lines": 0,
+        "kept_today_lines": 0,
+        "rolled_parts": 0,
+    }
+    if not log_path.is_file():
+        return res
+
+    raw = log_path.read_text(encoding="utf-8", errors="replace")
+    lines = raw.splitlines()
+    if not lines:
+        return res
+
+    try:
+        mtime_date = datetime.fromtimestamp(log_path.stat().st_mtime).astimezone().strftime("%Y-%m-%d")
+    except OSError:
+        mtime_date = today_str
+
+    past_buckets: Dict[str, List[str]] = {}
+    today_lines: List[str] = []
+    current_date: Optional[str] = None
+    for line in lines:
+        parsed = _extract_guillotine_line_date(line)
+        if parsed is not None:
+            current_date = parsed
+        bucket_date = current_date or mtime_date
+        if bucket_date < today_str:
+            past_buckets.setdefault(bucket_date, []).append(line)
+        else:
+            today_lines.append(line)
+
+    archive_root = get_log_archive_dir()
+    changed = False
+    for d_str in sorted(past_buckets.keys()):
+        bucket_lines = past_buckets[d_str]
+        content = "\n".join(bucket_lines) + "\n"
+        out_path = _write_archive_zero_overwrite(
+            archive_root / d_str,
+            "guillotine.log",
+            content,
+            force_part=False,
+        )
+        res["archived_dates"].append(d_str)
+        res["archived_files"].append(str(out_path))
+        res["archived_lines"] += len(bucket_lines)
+        changed = True
+
+    today_text = ("\n".join(today_lines) + "\n") if today_lines else ""
+    if today_lines and len(today_text.encode("utf-8")) > max_bytes:
+        part_path = _write_archive_zero_overwrite(
+            archive_root / today_str,
+            "guillotine.log",
+            today_text,
+            force_part=True,
+        )
+        res["archived_files"].append(str(part_path))
+        res["archived_lines"] += len(today_lines)
+        res["rolled_parts"] += 1
+        today_lines = []
+        today_text = ""
+        changed = True
+
+    res["kept_today_lines"] = len(today_lines)
+    if changed:
+        atomic_write_text(log_path, today_text, encoding="utf-8")
+    return res
+
+
+def _archive_host_logs_readonly(now_dt: datetime) -> Dict[str, Any]:
+    today_str = now_dt.strftime("%Y-%m-%d")
+    archive_root = get_log_archive_dir()
+    state_path = _archive_state_path()
+    res: Dict[str, Any] = {
+        "enabled": True,
+        "archived": {},
+        "archived_files": [],
+        "skipped_dates": [],
+    }
+
+    host_sources: Tuple[Tuple[str, Path], ...] = (
+        ("main.log", get_main_log_path()),
+        ("language_server.log", get_ls_log_path()),
+    )
+
+    with interprocess_file_lock(state_path, timeout=5.0):
+        loaded = load_json_safe(state_path)
+        state: Dict[str, Any] = loaded if isinstance(loaded, dict) else {}
+        host_state_map = state.get("host_logs")
+        if not isinstance(host_state_map, dict):
+            host_state_map = {}
+            state["host_logs"] = host_state_map
+
+        state_dirty = False
+        for log_name, src_path in host_sources:
+            if not src_path.is_file():
+                continue
+            try:
+                st_size = src_path.stat().st_size
+            except OSError:
+                continue
+            if st_size <= 0:
+                continue
+
+            read_bytes = min(max(st_size + 4096, 256 * 1024), _HOST_LOG_MAX_READ_BYTES)
+            raw_lines = read_shared_file_lines(src_path, max_tail_bytes=read_bytes)
+            if not raw_lines:
+                continue
+
+            buckets: Dict[str, List[str]] = {}
+            current_date: Optional[str] = None
+            for raw_line in raw_lines:
+                line = raw_line.rstrip("\r\n")
+                parsed = _extract_host_log_line_date(line, now_dt)
+                if parsed is not None:
+                    current_date = parsed
+                if current_date is not None and current_date < today_str:
+                    buckets.setdefault(current_date, []).append(line)
+
+            if not buckets:
+                continue
+
+            entry = host_state_map.get(log_name)
+            if not isinstance(entry, dict):
+                entry = {"archived_dates": []}
+                host_state_map[log_name] = entry
+            archived_set = set(str(x) for x in (entry.get("archived_dates") or []) if isinstance(x, str))
+
+            archived_for_source: List[str] = []
+            for d_str in sorted(buckets.keys()):
+                if d_str in archived_set:
+                    res["skipped_dates"].append(f"{log_name}:{d_str}")
+                    continue
+
+                content = "\n".join(buckets[d_str]) + "\n"
+                day_dir = archive_root / d_str
+                primary = day_dir / log_name
+                if primary.is_file():
+                    try:
+                        existing_text = primary.read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        existing_text = None
+                    if existing_text == content:
+                        archived_set.add(d_str)
+                        state_dirty = True
+                        res["skipped_dates"].append(f"{log_name}:{d_str}")
+                        continue
+
+                out_path = _write_archive_zero_overwrite(day_dir, log_name, content, force_part=False)
+                archived_set.add(d_str)
+                archived_for_source.append(d_str)
+                res["archived_files"].append(str(out_path))
+                state_dirty = True
+
+            if archived_for_source:
+                res["archived"][log_name] = archived_for_source
+            entry["archived_dates"] = sorted(archived_set)
+
+        if state_dirty:
+            state["version"] = 1
+            state["updated_at"] = now_dt.isoformat()
+            atomic_write_text(
+                state_path,
+                json.dumps(state, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+    return res
+
+
+def rollover_daily_logs(
+    *,
+    now_dt: Optional[datetime] = None,
+    include_host_logs: bool = True,
+    clean_hubs: bool = False,
+    live_ls_pids: Optional[set[int]] = None,
+) -> Dict[str, Any]:
+    ref_dt = now_dt if now_dt is not None else datetime.now().astimezone()
+    today_str = ref_dt.strftime("%Y-%m-%d")
+    archive_root = get_log_archive_dir()
+
+    g_path = get_guillotine_log_path()
+    g_path.parent.mkdir(parents=True, exist_ok=True)
+    with interprocess_file_lock(g_path, timeout=5.0):
+        g_stats = _rollover_guillotine_log_locked(
+            g_path,
+            now_dt=ref_dt,
+            max_bytes=GUILLOTINE_LOG_MAX_BYTES,
+        )
+
+    if include_host_logs:
+        host_stats = _archive_host_logs_readonly(ref_dt)
+    else:
+        host_stats = {
+            "enabled": False,
+            "archived": {},
+            "archived_files": [],
+            "skipped_dates": [],
+        }
+
+    hubs_cleaned = 0
+    if clean_hubs:
+        if live_ls_pids is not None:
+            preserve_set: Optional[set[int]] = set(live_ls_pids)
+        else:
+            entries = snapshot_processes_fast()
+            preserve_set = set(find_antigravity_process_tree(entries)["ls_pids"]) if entries else None
+        if preserve_set is not None:
+            hubs_cleaned = clean_stale_hub_files(preserve_pids=preserve_set)
+
+    msg = (
+        f"Log rollover ({today_str}): guillotine archived={len(g_stats['archived_files'])} file(s), "
+        f"host archived={len(host_stats['archived_files'])} file(s), stale hubs cleaned={hubs_cleaned}"
+    )
+    return {
+        "ok": True,
+        "today": today_str,
+        "archive_dir": str(archive_root),
+        "guillotine": g_stats,
+        "host_logs": host_stats,
+        "hubs_cleaned": hubs_cleaned,
+        "message": msg,
+    }
+
+
 def _log_guard(msg: str) -> None:
     p = get_guillotine_log_path()
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        if p.is_file() and p.stat().st_size > 512 * 1024:
-            bak = p.with_suffix(".log.1")
-            bak.unlink(missing_ok=True)
-            p.replace(bak)
-        ts = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
-        with open(p, "a", encoding="utf-8") as f:
-            f.write(f"[{ts}] {msg}\n")
+        now_dt = datetime.now().astimezone()
+        ts = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+        with interprocess_file_lock(p, timeout=2.0):
+            if p.is_file() and p.stat().st_size > GUILLOTINE_LOG_MAX_BYTES:
+                _rollover_guillotine_log_locked(
+                    p,
+                    now_dt=now_dt,
+                    max_bytes=GUILLOTINE_LOG_MAX_BYTES,
+                )
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(f"[{ts}] {msg}\n")
     except Exception:
         pass
 
@@ -333,6 +661,8 @@ def _daemon_body(max_cycles: int = 0) -> int:
     next_seal_try: Dict[int, float] = {}
     seal_backoff: Dict[int, float] = {}
     last_periodic_snap = time.time()
+    last_rollover_date = ""
+    last_hub_gc_at = 0.0
     cycle_count = 0
     phantom_main_cycles = 0
     cfg_cache: Dict[str, Any] = {}
@@ -483,12 +813,47 @@ def _daemon_body(max_cycles: int = 0) -> int:
                 cfg_cache_valid = True
             cfg = cfg_cache
 
+            live_daemon = max_cycles == 0 and open_process_handle is _ORIG_OPEN_PROCESS_HANDLE
+            live_ls_set_loop = set(ls_pids)
+            today_key = datetime.now().astimezone().strftime("%Y-%m-%d")
+            if today_key != last_rollover_date:
+                last_rollover_date = today_key
+                try:
+                    roll_res = rollover_daily_logs(
+                        include_host_logs=live_daemon,
+                        clean_hubs=live_daemon,
+                        live_ls_pids=live_ls_set_loop,
+                    )
+                    if live_daemon:
+                        last_hub_gc_at = now
+                    if (
+                        roll_res.get("hubs_cleaned")
+                        or roll_res.get("guillotine", {}).get("archived_files")
+                        or roll_res.get("host_logs", {}).get("archived_files")
+                    ):
+                        _log_guard(roll_res.get("message", "Daily log rollover completed"))
+                except Exception:
+                    pass
+            elif live_daemon and (now - last_hub_gc_at) >= 600.0:
+                last_hub_gc_at = now
+                try:
+                    removed_hubs = clean_stale_hub_files(preserve_pids=live_ls_set_loop)
+                    if removed_hubs > 0:
+                        _log_guard(f"Cleaned {removed_hubs} stale hub file(s)")
+                except Exception:
+                    pass
+
             if not main_pids:
                 phantom_main_cycles = 0
                 if tracked_servers:
                     killed = _release_tracked_servers(tracked_servers, stop=True)
                     _log_guard(f"UI closed: terminated tracked servers {killed}")
                     _reset_all_tracking()
+                    if live_daemon:
+                        try:
+                            clean_stale_hub_files(preserve_pids=live_ls_set_loop - set(killed))
+                        except Exception:
+                            pass
                 else:
                     seen_ls_pids.intersection_update(set(ls_pids))
                 bus.emit(
