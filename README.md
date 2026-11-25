@@ -65,6 +65,16 @@ Get-ChildItem .\acerola_orion -Recurse -Filter *.py | Select-String -Pattern "HT
    - Native Win32 DWM immersive dark Obsidian/Crimson High-DPI dashboard featuring **Dual Orion Astrolabe Chronographs** (`5h` outer arc + `Weekly` inner orbital ring + **Golden Time-Pace Marker**), interactive 24h trajectory / 14-day spend vector charts, and a dedicated **Orion-Vault** tab (4th Full Mode tab) for searching, syncing, restoring, and exporting conversations;
    - One-click toggle between **Full Observatory Mode** and **Zen Focus Mode (`--zen`)** alongside close-to-tray residency that cleanly cancels background UI refresh timers while hidden.
 
+### 🧩 Built-in Optional White-Hat Plugins (Enabled by Default, Toggleable)
+
+The bare microkernel maintains **0 third-party dependencies** (`dependencies = []`) and ships with 3 official white-hat optional plugins registered via standard `entry_points` (see [docs/PLUGIN_ARCHITECTURE.md](./docs/PLUGIN_ARCHITECTURE.md) for the full slot & hook specification):
+
+1. **`version_vault` — Append-Only Workspace Version Vault & `acerola-orion archive` CLI**: Scans superseded workspace drafts and seals them with checksum verification into an external non-deletable vault (`~/.gemini/acerola_orion/version_vault/`), backed by `acerola-orion archive` CLI subcommands and a desktop Archive tab.
+2. **`tasks_board` — Read-Only `.agents/tasks/` Task Pack & Handoff Board**: Renders local task decomposition packs and stage handoff checkpoints in a read-only desktop tab for live progress tracking.
+3. **`eoq_guard` — 200K Context EOQ Watermark Alert & Per-Window Exemption Toggle**: Surfaces 200K context EOQ handoff reminders with convenient per-window exemption controls.
+
+- **Selective Opt-Out / Pure Bare-Kernel Mode**: Disable individual plugins with `ACEROLA_ORION_DISABLED_PLUGINS=eoq_guard` (comma-separated, e.g. `eoq_guard,tasks_board`), or set `ACEROLA_ORION_DISABLE_PLUGINS=1` to run in pure zero-plugin bare-kernel mode.
+
 ---
 
 ## Quick Start
@@ -93,6 +103,15 @@ acerola-orion vault search "keyword"
 acerola-orion vault restore <uuid-prefix>
 acerola-orion vault export <uuid-prefix>
 
+# Built-in optional white-hat plugin: append-only workspace version vault CLI (`version_vault`)
+acerola-orion archive status --json
+acerola-orion archive scan
+acerola-orion archive seal --confirm
+
+# Selective plugin opt-out or pure zero-plugin bare-kernel mode
+$env:ACEROLA_ORION_DISABLED_PLUGINS="eoq_guard"; acerola-orion panel
+$env:ACEROLA_ORION_DISABLE_PLUGINS="1"; acerola-orion status
+
 # Optional: enable or cleanly remove logon autostart orphan-process guard
 acerola-orion guard install
 acerola-orion guard status
@@ -105,7 +124,7 @@ acerola-orion guard uninstall
 - **Silent Logon Autostart (Never Pops Up the Dashboard)**: Across PC reboots, Windows automatically starts **only** the headless `guard daemon` in the background — no console flash, no tray clutter, and **it never pops up the GUI panel unless you open `panel` yourself**.
 - **Autostart Transparency & 1-Click Removal**: `guard install` writes a 3-line plain-text VBScript at `~/.gemini/acerola_orion/start_guard_silent.vbs` (launching `pythonw.exe -m acerola_orion guard daemon`) and registers a user-level Windows Logon Scheduled Task named `AcerolaOrionGuard` (no admin UAC required, zero registry or `app.asar` changes). Running `acerola-orion guard uninstall` (or clicking **`⏹️ 停用`**) stops the daemon and deletes both cleanly.
 
-Run the verification & security self-audit suite (`42/42` tests):
+Run the verification & security self-audit suite (`74/74` tests):
 
 ```powershell
 python -m unittest discover -s tests -v

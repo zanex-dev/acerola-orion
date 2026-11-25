@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "acerola-orion"
-version = "2.0.0"
+version = "2.1.0"
 description = "7-Decimal Live Quota Telemetry, Passive KV Cache TTL Radar & 200K 2x Tier Alert, Append-Only Conversation Vault, Local Privacy-Isolated Token Ledger (Orion), and Win32 Kernel Handle Process Guard (Acerola) for Google Antigravity."
 readme = "README.md"
 license = { text = "PolyForm-Noncommercial-1.0.0" }
@@ -46,6 +46,11 @@ Changelog = "https://github.com/zanex-dev/acerola-orion/blob/main/CHANGELOG.md"
 [project.scripts]
 acerola-orion = "acerola_orion.__main__:main"
 orion = "acerola_orion.__main__:main"
+
+[project.entry-points."acerola_orion.plugins"]
+tasks_board = "acerola_orion.plugins.tasks_plugin:TasksPlugin"
+eoq_guard = "acerola_orion.plugins.eoq_plugin:EoqPlugin"
+version_vault = "acerola_orion.plugins.version_vault_plugin:VersionVaultPlugin"
 
 [tool.setuptools.packages.find]
 include = ["acerola_orion*"]

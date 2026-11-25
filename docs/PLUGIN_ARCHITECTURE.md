@@ -38,6 +38,28 @@ my_extension = "my_extension.plugin:MyExtensionPlugin"
 | `ACEROLA_ORION_DISABLE_PLUGINS=1\|true\|yes\|on` | `DISABLE_PLUGINS_ENV` / `plugins_disabled()` | 全局跳过 `entry_points` 扫描，进入纯净裸核模式 |
 | `ACEROLA_ORION_DISABLED_PLUGINS=name_a,name_b` | `DISABLED_PLUGINS_ENV` / `disabled_plugin_names()` / `is_plugin_disabled(name)` | 逗号分隔、大小写不敏感地禁用指定插件（匹配入口点名、插件 `.name` 属性或类名）；命中入口点名时跳过 `ep.load()`，不触发其导入副作用 |
 
+### 2.3 官方内置白帽可选插件入口点（随包注册，可逐个自选关闭）
+
+`acerola-orion` 裸核保持纯标准库 **0 第三方依赖**，同时在 `pyproject.toml` 的 `[project.entry-points."acerola_orion.plugins"]` 下内置注册以下 3 个官方白帽可选插件：
+
+| Entry Point 名称 | 能力摘要 |
+| --- | --- |
+| `version_vault` | 不可删工作区版本冷库（`~/.gemini/acerola_orion/version_vault/`）+ `acerola-orion archive` CLI 与主控台冷库页签 |
+| `tasks_board` | 只读 `.agents/tasks/` 任务拆解包与阶段交接单看板页签 |
+| `eoq_guard` | 200K 上下文 EOQ 水位提示与单窗免限切换控件 |
+
+按需禁用示例（PowerShell）：
+
+```powershell
+# 仅关闭指定插件（逗号分隔，可自由组合，例如关闭 eoq_guard 或 tasks_board,eoq_guard）
+$env:ACEROLA_ORION_DISABLED_PLUGINS="eoq_guard"
+acerola-orion panel
+
+# 一键进入 0 插件纯净裸核模式
+$env:ACEROLA_ORION_DISABLE_PLUGINS="1"
+acerola-orion status
+```
+
 ---
 
 ## 3. 插件协议契约（`OrionPlugin`）

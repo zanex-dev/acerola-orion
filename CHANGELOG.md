@@ -6,6 +6,23 @@ All notable changes to **`acerola-orion`** will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-11-25 — Built-in Optional White-Hat Plugins, Daily Log Archival & Selective Toggles
+
+### Added
+- **Three Built-in Official Optional White-Hat Plugins (`acerola_orion/plugins/`, still `0` third-party dependencies, enabled by default and individually toggleable)**:
+  - `version_vault`: Append-only non-deletable workspace version vault (`~/.gemini/acerola_orion/version_vault/`) with full `acerola-orion archive` CLI (`status`, `scan`, `seal`, `list`, `restore`, `export`, `push`) and a desktop archive tab.
+  - `tasks_board`: Read-only desktop board tab for inspecting `.agents/tasks/` task packs and stage handoff checkpoints.
+  - `eoq_guard`: 200K context EOQ watermark alert with per-window exemption toggles.
+- **Bare-Kernel & Per-Plugin Selective Toggles**:
+  - Individually disable any built-in or external plugin via `ACEROLA_ORION_DISABLED_PLUGINS=eoq_guard` (comma-separated), or run in pure zero-plugin bare-kernel mode via `ACEROLA_ORION_DISABLE_PLUGINS=1`.
+- **Daily Log Archival, Midnight Counter Reset & Expanded Radar/HUD Slots (`guillotine.py`, `telemetry.py`, `panel.py`, `ui/plugin_host.py`, `ui/hud.py`)**:
+  - Added zero-overwrite daily & 512KB log rollover archival, read-only past-day host log snapshots, stale hub cleanup, automatic midnight telemetry counter reset, timeout deduplication, and expanded radar/HUD plugin slots.
+
+### License, Documentation & Verification
+- Updated the repository license to [PolyForm Noncommercial License 1.0.0](./LICENSE) (free for personal and noncommercial use; commercial use and resale prohibited).
+- Updated bilingual `README` files and [docs/PLUGIN_ARCHITECTURE.md](./docs/PLUGIN_ARCHITECTURE.md) with the official built-in entry point matrix and opt-out examples.
+- Expanded the zero-egress clean-room test suite to **`74/74` passing** across both bare-kernel and plugin-enabled states.
+
 ## [2.0.0] - 2026-11-21 — Stdlib Microkernel & Slot-Driven Modular UI Architecture
 
 > *"Ask me why I refactored the whole thing? Because I'm the fucking open-source GOAT."*

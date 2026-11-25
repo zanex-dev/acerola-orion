@@ -68,6 +68,13 @@ Get-ChildItem .\acerola_orion -Recurse -Filter *.py | Select-String -Pattern "HT
   3. **防止继承主力模型偷跑额度**：避免孤儿进程继承关窗前挂载的高成本主力模型（如 `Gemini 4 Carbon / Neon / Argon` 或 `Claude Opus`）在后台持续消耗配额。
 - **事件驱动内核唤醒 & 归属句柄严格验真**：直接对真实 Electron UI 根主进程持有 Win32 `SYNCHRONIZE` 内核句柄并阻塞于 `WaitForMultipleObjects`（无轮询空转），最小化或缩入托盘绝不误杀；主程序真正退出时由内核即时唤醒，并仅清理已验明**同用户 SID（`advapi32` fail-closed）、同安装目录、同 UI 祖先且持有自身 hub** 的受控 `language_server*.exe` 句柄与陈旧 `hub_*.json`；同时在后台承载受 `vault_auto_backup` 控制的 Orion-Vault 增量巡检线程。
 
+### 🧩 4. 官方内置白帽可选插件（默认开启，可按需自选关闭）
+- **纯标准库微内核（0 第三方依赖）+ 3 大可选白帽扩展**：底座默认零外部依赖，通过标准 `entry_points` 挂载 3 个官方白帽插件（架构与插槽契约详见 [docs/PLUGIN_ARCHITECTURE.md](./docs/PLUGIN_ARCHITECTURE.md)）：
+  1. **`version_vault`（不可删工作区版本冷库 + `acerola-orion archive` CLI）**：扫描工作区历史版本草稿并经双向校验外迁至 `~/.gemini/acerola_orion/version_vault/` 不可删外部冷库，配套完整 `archive` 子命令与主控台冷库页签，避免迭代覆盖或误删旧版；
+  2. **`tasks_board`（只读 `.agents/tasks/` 任务拆解与交接单看板）**：在桌面主控台提供只读任务包与阶段交接单可视化看板，一览原子卡片进度与依赖状态；
+  3. **`eoq_guard`（200K 上下文水位提示与单窗免限切换）**：结合 200K 上下文边界提供 EOQ 水位收口提醒，并支持按需对单个会话窗口切换免限状态。
+- **灵活自选开关（零入侵按需退回裸核）**：无需改代码即可通过环境变量逐个关闭任意插件（`ACEROLA_ORION_DISABLED_PLUGINS=eoq_guard`，支持逗号分隔多选），或设置 `ACEROLA_ORION_DISABLE_PLUGINS=1` 一键运行在 0 插件纯净裸核模式。
+
 ---
 
 ## ⚔️ 断头台守卫（Acerola Guard）使用与后台常驻说明
@@ -117,7 +124,16 @@ acerola-orion vault search "关键词"
 acerola-orion vault restore <uuid前缀>
 acerola-orion vault export <uuid前缀>
 
-# 启动猎户座星盘桌面主控台（支持 DWM 沉浸暗黑窗框、4 页签含保险箱、点 × 缩入托盘暂停刷新定时器）
+# 官方白帽可选插件：工作区不可删版本冷库 CLI（version_vault）
+acerola-orion archive status --json
+acerola-orion archive scan
+acerola-orion archive seal --confirm
+
+# 按需关闭单个插件或进入 0 插件纯净裸核模式
+$env:ACEROLA_ORION_DISABLED_PLUGINS="eoq_guard"; acerola-orion panel
+$env:ACEROLA_ORION_DISABLE_PLUGINS="1"; acerola-orion status
+
+# 启动猎户座星盘桌面主控台（支持 DWM 沉浸暗黑窗框、多页签含保险箱与官方插件、点 × 缩入托盘暂停刷新定时器）
 acerola-orion panel
 
 # 一键以「极简专注模式」启动（同屏仅聚焦 1 个核心指标 + 1 张趋势统计图，亦可在界面右上角随时切换）
@@ -139,7 +155,7 @@ acerola-orion guard uninstall
 
 > **系统驻留透明度说明**：执行 `guard install` 仅在用户目录 `~/.gemini/acerola_orion/start_guard_silent.vbs` 生成 3 行明文 VBScript（用于在登录时不弹黑框拉起 `pythonw.exe -m acerola_orion guard daemon`），并注册当前用户级计划任务 `AcerolaOrionGuard`（无需管理员提权、不修改注册表或客户端 `app.asar`）。执行 `guard uninstall` 即可一键彻底清除。
 
-### 3. 运行安全自审与单元测试套件（`42/42` 项）
+### 3. 运行安全自审与单元测试套件（`74/74` 项）
 
 ```powershell
 python -m unittest discover -s tests -v

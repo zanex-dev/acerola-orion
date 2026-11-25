@@ -6,6 +6,23 @@
 
 日志格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本 2.0.0 (SemVer)](https://semver.org/lang/zh-CN/)。
 
+## [2.1.0] - 2026-11-25 — 官方内置白帽可选插件生态、每日日志归档与按需自选开关
+
+### 新增功能
+- **3 大官方内置白帽可选插件（`acerola_orion/plugins/`，保持 `0` 第三方依赖，默认随包注册且可随时按需关闭）**：
+  - `version_vault`：提供不可删工作区版本冷库（`~/.gemini/acerola_orion/version_vault/`）与完整 `acerola-orion archive` CLI（`status` / `scan` / `seal` / `list` / `restore` / `export` / `push`）及主控台冷库页签，防止版本迭代误删旧稿。
+  - `tasks_board`：提供只读 `.agents/tasks/` 任务拆解包与阶段交接单可视化看板页签，实时跟踪多卡片状态与进度。
+  - `eoq_guard`：提供 200K 上下文 EOQ 水位收口提示与单窗免限切换控件。
+- **裸核默认与逐个插件自选开关**：
+  - 支持通过 `ACEROLA_ORION_DISABLED_PLUGINS=eoq_guard`（逗号分隔可组合）按需关闭任意内置或外部插件，或通过 `ACEROLA_ORION_DISABLE_PLUGINS=1` 一键回退至 0 插件纯净裸核模式。
+- **每日日志无覆盖归档、午夜计数归零与插件槽位扩展（`guillotine.py`、`telemetry.py`、`panel.py`、`ui/plugin_host.py`、`ui/hud.py`）**：
+  - 新增守卫日志按日/512KB 无覆盖分卷归档、宿主日志只读跨日快照与过期 hub 清理；补齐午夜计数自动归零、超时异常去重及雷达/HUD 插件扩展槽位。
+
+### 许可、文档与测试
+- 开源许可证切换为 [PolyForm Noncommercial License 1.0.0](./LICENSE)（个人学习与非营利研究免费开放，禁止商业用途与二次售卖）。
+- 同步更新中英文 `README` 与 [docs/PLUGIN_ARCHITECTURE.md](./docs/PLUGIN_ARCHITECTURE.md) 官方白帽插件入口点清单与禁用示例。
+- 零外联净室单元测试扩展至 **`74/74` 项全绿**（完整验证裸核模式与插件启用双态）。
+
 ## [2.0.0] - 2026-11-21 — 纯标准库微内核与 Slot 插槽驱动模块化 UI 架构重构
 
 > **「问我为什么重构？因为我是他妈的开源 GOAT。」**

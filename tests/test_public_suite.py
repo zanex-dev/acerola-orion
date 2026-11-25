@@ -186,7 +186,6 @@ class AcerolaOrionPublicSuite(unittest.TestCase):
             "companion_" + "project",
             "model_pool_" + "quotas",
             "orion_" + "private",
-            "task_" + "board",
         ]
 
         scan_targets = list(py_files) + [
@@ -215,7 +214,7 @@ class AcerolaOrionPublicSuite(unittest.TestCase):
             rpc.ConnectRpcClient(http_port=8080, csrf_token="tok", host="example.com")
 
     def test_02_version_and_model_pricing_math(self) -> None:
-        self.assertEqual(constants.APP_VERSION, "2.0.0")
+        self.assertEqual(constants.APP_VERSION, "2.1.0")
         c4 = constants.classify_model("Gemini 4 Carbon (High)")
         self.assertEqual(c4.family_id, "4c")
         self.assertAlmostEqual(c4.compute_usd(1_000_000, 0, 100_000, 1.0), 6.0)
