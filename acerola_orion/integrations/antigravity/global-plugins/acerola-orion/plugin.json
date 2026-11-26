@@ -1,0 +1,12 @@
+{
+  "name": "acerola-orion",
+  "displayName": "Acerola-Orion (配额遥测 · 缓存雷达 · 账本 · 对话与版本保险箱)",
+  "version": "2.1.0",
+  "description": "Acerola-Orion (雅赛劳拉莉昂): Google Antigravity 7 位精度配额遥测、被动 KV 缓存 TTL 与 200K 计价墙雷达、本地隐私隔离 Token 账单与倍率审计、Orion-Vault 对话防误删时光保险箱、Version-Vault 版本冷库及零轮询内核进程守卫。",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "用 acerola-orion 查看我当前的 7 位精度配额水位、KV 缓存余温雷达以及对话保险箱状态",
+    "查看 Orion-Vault 对话防删保险箱里有哪些已删可恢复的对话，或开启/关闭自动备份",
+    "拉一下我今天和最近 14 天的本地 Token 消耗账单与模型倍率审计"
+  ]
+}

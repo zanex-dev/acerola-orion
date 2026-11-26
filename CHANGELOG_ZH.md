@@ -6,6 +6,27 @@
 
 日志格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本 2.0.0 (SemVer)](https://semver.org/lang/zh-CN/)。
 
+## [2.4.5] - 2026-11-26 — 旅途的终点（随仓白帽工作流套件、可逆装配器与洁净室门禁）
+
+> **「这是我们的最后一次更新，真的，这次绝不骗你（Re-Logic 语气）。可惜大版本已经上 2 回不去 1.4.5 了，2.4.5 精神续作凑合看吧 lol。」**
+
+### 新增功能
+- **内置 200K 上下文 EOQ 水位守卫 Hook（`acerola_orion/plugins/eoq_hook.py`）**：
+  - 将纯标准库零依赖的会话水位 Hook（`python -m acerola_orion.plugins.eoq_hook`）收编入主包：支持 `95K / 175K` 热窗分级收口提示、`180K` `PreToolUse` 强提醒与 `PostToolUse` 自动解锁、冷窗拦截与救援草稿落盘、`/compact` 水位重置，以及与主控台 `eoq_guard` 单窗免限开关的双向联动（异常默认 fail-open 放行，关闭插件即自动短路）。
+- **随仓官方白帽 Antigravity 伴侣套件（`acerola_orion/integrations/antigravity/`，共 18 个纯明文资产）**：
+  - **全局伴侣插件与技能**：内置 `acerola-orion` 全局插件（含 `acerola-orion` 星盘速查技能与 `orion-vault` 对话保险箱技能），以及 `session-recall`（跨会话靶词检索与 `recall.py` 切片调阅，免整窗通读爆上下文）与 `kv-keepalive`（短时限次 Prompt KV 缓存余温护航，用户发言自动提前取消）。
+  - **工作区工程插件**：内置 `eoq-task-relay`（`task-decomposer` 先只读探索拆解 `PLAN.md` + `≤1.5K` 原子卡再轻载施工、`stage-handoff` 阶段交接单，直接驱动主控台 `tasks_board` 看板）与 `engineering-core`（`version-seal` 联动 `archive` 双向 SHA-256 校验外迁旧版入冷库，附可选工程准则模板 `rules/AGENTS.md`）。
+  - **Hooks 配置模板与速查手册**：随附 `hooks.template.json`、`eoq_guard_config.json` 默认水位配置与 `eoq_context_guard_cheatsheet.md`。
+- **一键可逆伴侣装配器 CLI（`acerola_orion/companion.py`，`acerola-orion companion`）**：
+  - 默认绝不静默改写 `~/.gemini/config/`；新增 `companion status | install | uninstall` 子命令（支持 `--workspace`、`--include-rules`、`--no-hooks`、`--no-global-skills`、`--force`、`--python-exe`、`--remove-global`、`--remove-workspace`、`--json`）。
+  - 安装时对 `hooks.json` 执行非破坏性合并（完整保留用户已有自定义 Hooks，未传 `--force` 不覆盖已有文件）；卸载时仅精准摘除 Orion 托管项，绝不误删用户自有技能与配置。
+- **架构路标与 Agent 寻路地图（`AGENTS.md`）**：
+  - 新增仓库级模块边界、大文件符号行号锚点与单测映射导航表，降低跨模块定位与上下文开销。
+
+### 安全自审与测试加固
+- **洁净室静态安全门禁扩容（`tests/test_public_suite.py`）**：`test_01_static_security_zero_egress_and_clean_room_audit` 现自动递归审计 `acerola_orion/integrations/` 下全部 `.py` / `.md` / `.json` / `.svg` 资产与 `AGENTS.md`，强制校验零外联依赖、零凭据读取及零本机用户绝对路径硬编码泄漏。
+- 新增 `tests/test_eoq_hook.py` 与 `tests/test_companion_installer.py`，公开仓零外联净室单测扩展至 **`85/85` 项全绿**（完整覆盖默认态与 `ACEROLA_ORION_DISABLE_PLUGINS=1` 纯净裸核态）。
+
 ## [2.1.0] - 2026-11-25 — 官方内置白帽可选插件生态、每日日志归档与按需自选开关
 
 ### 新增功能

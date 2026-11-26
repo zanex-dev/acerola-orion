@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zanex-dev/acerola-orion/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-42%2F42%20passing-brightgreen" alt="Tests" /></a>
-  <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v2.0.0-be123c" alt="Version v2.0.0" /></a>
+  <a href="https://github.com/zanex-dev/acerola-orion/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-85%2F85%20passing-brightgreen" alt="Tests" /></a>
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v2.4.5-be123c" alt="Version v2.4.5" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-e11d48.svg" alt="License: PolyForm Noncommercial 1.0.0" /></a>
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.10%2B%20(0%20deps)-3776AB.svg" alt="Python 3.10+" /></a>
   <img src="https://img.shields.io/badge/network-127.0.0.1%20loopback%20only-059669" alt="Loopback Only" />
@@ -75,6 +75,10 @@ Get-ChildItem .\acerola_orion -Recurse -Filter *.py | Select-String -Pattern "HT
   3. **`eoq_guard`（200K 上下文水位提示与单窗免限切换）**：结合 200K 上下文边界提供 EOQ 水位收口提醒，并支持按需对单个会话窗口切换免限状态。
 - **灵活自选开关（零入侵按需退回裸核）**：无需改代码即可通过环境变量逐个关闭任意插件（`ACEROLA_ORION_DISABLED_PLUGINS=eoq_guard`，支持逗号分隔多选），或设置 `ACEROLA_ORION_DISABLE_PLUGINS=1` 一键运行在 0 插件纯净裸核模式。
 
+### 🛠️ 5. 随仓官方配套 Antigravity Skills & Hooks 套件（可选一键可逆装配）
+- **100% 明文可审计白帽套件（`acerola_orion/integrations/antigravity/`，共 18 个纯明文资产）**：随仓内置与星盘、任务看板、版本冷库协同工作的官方伴侣资产，涵盖 `acerola-orion` 全局插件（`acerola-orion` / `orion-vault` 技能）、全局效率技能（`session-recall` 跨会话切片检索、`kv-keepalive` 短时缓存续温）、工作区插件（`eoq-task-relay` 的 `task-decomposer` / `stage-handoff`、`engineering-core` 的 `version-seal` 与可选工程准则 `rules/AGENTS.md`）以及内置 `eoq_hook` / `vault` Hooks 模板。
+- **非破坏性按需安装与干净卸载（`acerola-orion companion`）**：默认绝不静默改写 `~/.gemini/config/`；用户可随时通过 `companion status / install / uninstall` 查看状态、合并注册 Orion 托管项（支持 `--workspace <path>`、`--include-rules`、`--no-hooks`、`--no-global-skills`、`--force`），或一键精准卸载托管项且完整保留用户自有配置。
+
 ---
 
 ## ⚔️ 断头台守卫（Acerola Guard）使用与后台常驻说明
@@ -129,6 +133,11 @@ acerola-orion archive status --json
 acerola-orion archive scan
 acerola-orion archive seal --confirm
 
+# 可选：一键检查 / 可逆装配随仓官方配套 Antigravity Skills & Hooks 套件
+python -m acerola_orion companion status
+python -m acerola_orion companion install --workspace .                 # 附加 --include-rules 可选装全局规则模板，--force 刷新托管副本
+python -m acerola_orion companion uninstall --workspace . --remove-workspace --remove-global
+
 # 按需关闭单个插件或进入 0 插件纯净裸核模式
 $env:ACEROLA_ORION_DISABLED_PLUGINS="eoq_guard"; acerola-orion panel
 $env:ACEROLA_ORION_DISABLE_PLUGINS="1"; acerola-orion status
@@ -155,7 +164,7 @@ acerola-orion guard uninstall
 
 > **系统驻留透明度说明**：执行 `guard install` 仅在用户目录 `~/.gemini/acerola_orion/start_guard_silent.vbs` 生成 3 行明文 VBScript（用于在登录时不弹黑框拉起 `pythonw.exe -m acerola_orion guard daemon`），并注册当前用户级计划任务 `AcerolaOrionGuard`（无需管理员提权、不修改注册表或客户端 `app.asar`）。执行 `guard uninstall` 即可一键彻底清除。
 
-### 3. 运行安全自审与单元测试套件（`74/74` 项）
+### 3. 运行安全自审与单元测试套件（`85/85` 项）
 
 ```powershell
 python -m unittest discover -s tests -v

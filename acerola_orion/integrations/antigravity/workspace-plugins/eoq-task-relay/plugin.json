@@ -1,0 +1,11 @@
+{
+  "name": "eoq-task-relay",
+  "displayName": "EOQ Task Decomposer & Stage Handoff (任务拆解与交接接力)",
+  "version": "1.0.0",
+  "description": "按需开启的 EOQ 任务探索拆解（task-decomposer）与 ≤1.5K 阶段交接单（stage-handoff）协议包，对接 Acerola-Orion 任务看板；支持插件面板或 eoq-on/eoq-off 独立启停，零污染非工程区。",
+  "suggestedPrompts": [
+    "拆解任务：梳理当前模块需求并落盘结构化任务包",
+    "写交接单：将当前阶段结论与锚点落盘至 .agents/checkpoints/",
+    "请激活 task-decomposer 技能，执行指定任务包的 T01（完成后停下来问我）"
+  ]
+}

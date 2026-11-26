@@ -41,7 +41,8 @@
 ```text
 acerola-orion-public/
 ├── acerola_orion/
-│   ├── __main__.py              # CLI 入口、参数解析与子命令路由
+│   ├── __main__.py              # CLI 入口、参数解析与子命令路由（含 companion）
+│   ├── companion.py             # 随仓白帽 Skills / Hooks 可逆装配器（companion CLI）
 │   ├── rpc.py                   # 127.0.0.1 回环 ConnectRpcClient
 │   ├── telemetry.py             # 配额 / 游标遥测
 │   ├── cache_radar.py           # KV 缓存 / 200K 上下文采样
@@ -51,7 +52,8 @@ acerola-orion-public/
 │   ├── panel.py                 # Tk 主面板薄壳与槽位装配
 │   ├── core/kernel.py           # 微内核生命周期与插件发现
 │   ├── ui/                      # plugin_host.py 与 tabs/* 薄壳标签页
-│   └── plugins/                 # 内置插件（version_vault / tasks_board / eoq_guard）
+│   ├── plugins/                 # 内置插件（version_vault / tasks_board / eoq_guard / eoq_hook）
+│   └── integrations/antigravity/# 随仓官方白帽配套插件包、Skills、Rules 与 Hooks 资产
 ├── docs/PLUGIN_ARCHITECTURE.md  # 插件槽位与扩展接入规范
 └── tests/                       # 模块单测与公开洁净室综合套件
 ```
@@ -60,11 +62,14 @@ acerola-orion-public/
 
 ## 3. 大文件行号路标（定点切片读，禁止整文件通读）
 
-以下模块体量较大，阅读或修改前须先按路标行号切片定位，禁止全仓盲搜或整文件通读：
+以下模块体量较大或承担关键边界职责，阅读或修改前须先按路标切片定位，禁止全仓盲搜或整文件通读：
 
 | 文件路径 | 约略行数 | 关键符号与锚点 | 职责摘要 |
 |---|---:|---|---|
-| `acerola_orion/__main__.py` | ~586L | CLI 入口与子命令分发 | 命令行参数解析、裸核/插件子命令路由 |
+| `acerola_orion/__main__.py` | ~630L | CLI 入口与子命令分发 | 命令行参数解析、裸核/插件与 `companion` 子命令路由 |
+| `acerola_orion/companion.py` | ~380L | `companion_status` / `install_companion` / `uninstall_companion` | 随仓白帽 Skills、Hooks 与工作区插件可逆安装/卸载 |
+| `acerola_orion/plugins/eoq_hook.py` | ~220L | `evaluate_eoq_hook` / `main` | 200K 上下文 EOQ 水位收口 Hook 标准输入输出评估 |
+| `acerola_orion/integrations/antigravity/` | 套件目录 | `plugins/` · `global_skills/` · `global_rules/` | 随仓明文白帽配套 Skills、Rules 与 Hooks 模板资产 |
 | `acerola_orion/rpc.py` | ~1390L | `ConnectRpcClient` (`L850+`) | `127.0.0.1` 回环 RPC 客户端封装 |
 | `acerola_orion/panel.py` | ~1319L | `AcerolaOrionApp` (`L183+`) | Tkinter 主面板薄壳、托盘与 UI 槽位装配 |
 | `acerola_orion/vault.py` | ~1572L | `OrionVault` (`L306+`) | 增量文本/SVG 快照管理与媒体物理过滤 |

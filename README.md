@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zanex-dev/acerola-orion/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-42%2F42%20passing-brightgreen" alt="Tests" /></a>
-  <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v2.0.0-be123c" alt="Version v2.0.0" /></a>
+  <a href="https://github.com/zanex-dev/acerola-orion/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-85%2F85%20passing-brightgreen" alt="Tests" /></a>
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v2.4.5-be123c" alt="Version v2.4.5" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-e11d48.svg" alt="License: PolyForm Noncommercial 1.0.0" /></a>
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.10%2B%20(0%20deps)-3776AB.svg" alt="Python 3.10+" /></a>
   <img src="https://img.shields.io/badge/network-127.0.0.1%20loopback%20only-059669" alt="Loopback Only" />
@@ -75,6 +75,12 @@ The bare microkernel maintains **0 third-party dependencies** (`dependencies = [
 
 - **Selective Opt-Out / Pure Bare-Kernel Mode**: Disable individual plugins with `ACEROLA_ORION_DISABLED_PLUGINS=eoq_guard` (comma-separated, e.g. `eoq_guard,tasks_board`), or set `ACEROLA_ORION_DISABLE_PLUGINS=1` to run in pure zero-plugin bare-kernel mode.
 
+### 🛠️ Bundled Companion Antigravity Skills & Hooks Suite (Opt-In & Reversible)
+
+The repository bundles 18 official plain-text auditable companion assets under `acerola_orion/integrations/antigravity/` — including the `acerola-orion` global plugin (`acerola-orion` & `orion-vault` skills), global skills (`session-recall`, `kv-keepalive`), workspace plugins (`eoq-task-relay` with `task-decomposer` & `stage-handoff`, `engineering-core` with `version-seal` & optional `rules/AGENTS.md`), and built-in `eoq_hook` / `vault` hook templates:
+
+- **100% Opt-In & Non-Destructive (`acerola-orion companion`)**: Nothing in `~/.gemini/config/` is ever modified automatically. Use `acerola-orion companion status | install | uninstall` (with `--workspace <path>`, `--include-rules`, `--no-hooks`, `--no-global-skills`, `--force`, `--remove-global`, `--remove-workspace`) to inspect, merge-install, or cleanly remove Orion-managed entries without disturbing existing user hooks or files.
+
 ---
 
 ## Quick Start
@@ -108,6 +114,11 @@ acerola-orion archive status --json
 acerola-orion archive scan
 acerola-orion archive seal --confirm
 
+# Optional: inspect, install, or cleanly remove bundled Antigravity Skills & Hooks
+python -m acerola_orion companion status
+python -m acerola_orion companion install --workspace .                 # Add --include-rules for global rule template, --force to refresh
+python -m acerola_orion companion uninstall --workspace . --remove-workspace --remove-global
+
 # Selective plugin opt-out or pure zero-plugin bare-kernel mode
 $env:ACEROLA_ORION_DISABLED_PLUGINS="eoq_guard"; acerola-orion panel
 $env:ACEROLA_ORION_DISABLE_PLUGINS="1"; acerola-orion status
@@ -124,7 +135,7 @@ acerola-orion guard uninstall
 - **Silent Logon Autostart (Never Pops Up the Dashboard)**: Across PC reboots, Windows automatically starts **only** the headless `guard daemon` in the background — no console flash, no tray clutter, and **it never pops up the GUI panel unless you open `panel` yourself**.
 - **Autostart Transparency & 1-Click Removal**: `guard install` writes a 3-line plain-text VBScript at `~/.gemini/acerola_orion/start_guard_silent.vbs` (launching `pythonw.exe -m acerola_orion guard daemon`) and registers a user-level Windows Logon Scheduled Task named `AcerolaOrionGuard` (no admin UAC required, zero registry or `app.asar` changes). Running `acerola-orion guard uninstall` (or clicking **`⏹️ 停用`**) stops the daemon and deletes both cleanly.
 
-Run the verification & security self-audit suite (`74/74` tests):
+Run the verification & security self-audit suite (`85/85` tests):
 
 ```powershell
 python -m unittest discover -s tests -v

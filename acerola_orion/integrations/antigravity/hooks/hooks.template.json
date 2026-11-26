@@ -1,0 +1,46 @@
+{
+  "eoq-context-guard": {
+    "enabled": true,
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "<PYTHON_EXE> -m acerola_orion.plugins.eoq_hook --event PreInvocation",
+        "timeout": 8
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "read_file|run_command|search_web|call_mcp_tool|invoke_subagent|run_workflow|read_resource",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<PYTHON_EXE> -m acerola_orion.plugins.eoq_hook --event PreToolUse",
+            "timeout": 8
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "read_file|run_command|search_web|call_mcp_tool|invoke_subagent|run_workflow|read_resource",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<PYTHON_EXE> -m acerola_orion.plugins.eoq_hook --event PostToolUse",
+            "timeout": 8
+          }
+        ]
+      }
+    ]
+  },
+  "orion-chat-vault": {
+    "enabled": true,
+    "Stop": [
+      {
+        "type": "command",
+        "command": "<PYTHON_EXE> -m acerola_orion.vault_hook",
+        "timeout": 8
+      }
+    ]
+  }
+}

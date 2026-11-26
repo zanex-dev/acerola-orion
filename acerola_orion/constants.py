@@ -20,7 +20,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 APP_NAME = "acerola-orion"
 APP_CODENAME = "Acerola-Orion (雅赛劳拉莉昂)"
 APP_TRINITY = "Kiss-Shot · Acerola-Orion · Heart-Under-Blade"
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.4.5"
 
 _ATOMIC_TMP_SEQ = itertools.count(1)
 

@@ -140,6 +140,8 @@ class TestPluginVersionVault(unittest.TestCase):
         )
         env = os.environ.copy()
         env["PYTHONPATH"] = str(_PUB_ROOT)
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
         proc = subprocess.run(
             [sys.executable, "-c", code],
             capture_output=True,
@@ -390,6 +392,8 @@ class TestPluginVersionVault(unittest.TestCase):
         vault.enqueue_seal_job([src], trigger_reason="worker_module_test", evict_source=True)
         env = os.environ.copy()
         env["PYTHONPATH"] = str(_PUB_ROOT)
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
         proc = subprocess.run(
             [
                 sys.executable,

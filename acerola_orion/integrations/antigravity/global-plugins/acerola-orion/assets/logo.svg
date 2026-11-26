@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="45%" r="60%">
+      <stop offset="0%" stop-color="#2a0a16"/>
+      <stop offset="65%" stop-color="#11070d"/>
+      <stop offset="100%" stop-color="#070408"/>
+    </radialGradient>
+    <linearGradient id="crimson" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fb7185"/>
+      <stop offset="50%" stop-color="#e11d48"/>
+      <stop offset="100%" stop-color="#881337"/>
+    </linearGradient>
+    <linearGradient id="starlight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fde68a"/>
+      <stop offset="50%" stop-color="#f43f5e"/>
+      <stop offset="100%" stop-color="#38bdf8"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="url(#bg)" stroke="#be123c" stroke-width="4"/>
+  <!-- Orbital Ring (Orion Telemetry & Acerola Process Guard) -->
+  <ellipse cx="128" cy="128" rx="92" ry="38" transform="rotate(-28 128 128)" fill="none" stroke="url(#crimson)" stroke-width="3.5" stroke-dasharray="10 6" opacity="0.85"/>
+  <ellipse cx="128" cy="128" rx="92" ry="38" transform="rotate(32 128 128)" fill="none" stroke="#38bdf8" stroke-width="2" opacity="0.45"/>
+  <!-- Orion Constellation Lines -->
+  <g stroke="url(#starlight)" stroke-width="2.4" stroke-linecap="round" opacity="0.92">
+    <line x1="82" y1="58" x2="110" y2="122"/>
+    <line x1="176" y1="66" x2="146" y2="132"/>
+    <line x1="110" y1="122" x2="128" y2="127"/>
+    <line x1="128" y1="127" x2="146" y2="132"/>
+    <line x1="110" y1="122" x2="88" y2="194"/>
+    <line x1="146" y1="132" x2="172" y2="198"/>
+    <line x1="82" y1="58" x2="176" y2="66" stroke-opacity="0.35"/>
+    <line x1="88" y1="194" x2="172" y2="198" stroke-opacity="0.35"/>
+  </g>
+  <!-- Acerola Core Blade / Diamond -->
+  <polygon points="128,88 142,127 128,166 114,127" fill="url(#crimson)" opacity="0.35"/>
+  <!-- Orion Belt & Major Stars -->
+  <circle cx="82" cy="58" r="7.5" fill="#fb7185"/>
+  <circle cx="176" cy="66" r="6" fill="#fde68a"/>
+  <circle cx="110" cy="122" r="5" fill="#f8fafc"/>
+  <circle cx="128" cy="127" r="6.5" fill="#fde047"/>
+  <circle cx="146" cy="132" r="5" fill="#f8fafc"/>
+  <circle cx="88" cy="194" r="6" fill="#fde68a"/>
+  <circle cx="172" cy="198" r="7.5" fill="#38bdf8"/>
+</svg>

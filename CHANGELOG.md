@@ -6,6 +6,27 @@ All notable changes to **`acerola-orion`** will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.5] - 2026-11-26 — Journey's End (Companion Workflow Suite, Reversible Installer & Clean-Room Gate)
+
+> *"Our final update, for real this time — we swear (in true Re-Logic fashion). Already on 2.x so we missed 1.4.5; 2.4.5 will have to do lol."*
+
+### Added
+- **Built-in 200K Context EOQ Watermark Hook (`acerola_orion/plugins/eoq_hook.py`)**:
+  - Consolidated the zero-dependency stdlib session watermark hook (`python -m acerola_orion.plugins.eoq_hook`) into the core package, featuring `95K / 175K` hot-window handoff alerts, `180K` `PreToolUse` confirmation gates with `PostToolUse` auto-unlock, cold-window rescue draft saving, `/compact` watermark reset, fail-open safety, and bidirectional linkage with the `eoq_guard` per-window exemption toggle.
+- **Bundled Official White-Hat Antigravity Companion Suite (`acerola_orion/integrations/antigravity/`, 18 plain-text auditable files)**:
+  - **Global companion plugin & skills**: Ships the `acerola-orion` global plugin (`acerola-orion` & `orion-vault` skills) alongside `session-recall` (`recall.py` targeted cross-session slice lookup without full-transcript context bloat) and `kv-keepalive` (short-lived bounded Prompt KV cache warmth helper with automatic early cancel on user reply).
+  - **Workspace workflow plugins**: Ships `eoq-task-relay` (`task-decomposer` read-only exploration into `PLAN.md` + `<=1.5K` atomic cards and `stage-handoff` checkpoints, powering the `tasks_board` desktop tab) and `engineering-core` (`version-seal` SHA-256 verified archival into `version_vault`, plus optional `rules/AGENTS.md` engineering rules).
+  - **Hook templates & reference docs**: Includes `hooks.template.json`, `eoq_guard_config.json`, and `eoq_context_guard_cheatsheet.md`.
+- **Opt-In Non-Destructive Companion Installer CLI (`acerola_orion/companion.py`, `acerola-orion companion`)**:
+  - Never touches `~/.gemini/config/` unprompted; adds `companion status | install | uninstall` (`--workspace`, `--include-rules`, `--no-hooks`, `--no-global-skills`, `--force`, `--python-exe`, `--remove-global`, `--remove-workspace`, `--json`).
+  - Performs non-destructive `hooks.json` merges (preserving custom user hooks and skipping existing files without `--force`) and surgical removal of Orion-managed entries on `uninstall`.
+- **Repository Architecture & Agent Navigation Map (`AGENTS.md`)**:
+  - Added module boundary overview, large-file symbol line anchors, and test-suite mapping for low-context code navigation.
+
+### Security & Verification
+- **Expanded Clean-Room Static Security Audit (`tests/test_public_suite.py`)**: Recursively scans all `.py` / `.md` / `.json` / `.svg` assets under `acerola_orion/integrations/` plus `AGENTS.md`, enforcing zero external egress, zero credential access, and zero hardcoded local user-directory path leakage.
+- Added `tests/test_eoq_hook.py` and `tests/test_companion_installer.py`, expanding the zero-egress clean-room test suite to **`85/85` passing** across both default and `ACEROLA_ORION_DISABLE_PLUGINS=1` bare-kernel modes.
+
 ## [2.1.0] - 2026-11-25 — Built-in Optional White-Hat Plugins, Daily Log Archival & Selective Toggles
 
 ### Added

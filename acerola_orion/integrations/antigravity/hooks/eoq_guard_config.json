@@ -1,0 +1,59 @@
+{
+  "enabled": true,
+  "cold_ttl_sec": 250,
+  "cold_block_tokens": 30000,
+  "cold_auto_rescue_draft": true,
+  "hot_nudge_tokens": 95000,
+  "cliff_warn_tokens": 175000,
+  "cliff_tool_lock_tokens": 180000,
+  "compact_reset_drop_tokens": 40000,
+  "exempt_workspace_names": [
+    "chat",
+    "tavern"
+  ],
+  "chat_workspace_mode": "off",
+  "bypass_tokens": [
+    "!go",
+    "!force",
+    "/compact"
+  ],
+  "cliff_allow_unlocks_window": true,
+  "window_unlock_tokens": [
+    "!unlock",
+    "!nolimit",
+    "!unlimit",
+    "!force",
+    "!一直做",
+    "!免限",
+    "解锁本窗",
+    "本窗免限"
+  ],
+  "window_lock_tokens": [
+    "!lock",
+    "!relock",
+    "锁定本窗",
+    "恢复本窗锁"
+  ],
+  "exempt_input_prefixes": [
+    "保活",
+    "续杯",
+    "取消保活",
+    "停止保活",
+    "[KV-KeepAlive"
+  ],
+  "cliff_locked_tools": [
+    "read_file",
+    "run_command",
+    "search_web",
+    "call_mcp_tool",
+    "invoke_subagent",
+    "run_workflow",
+    "read_resource"
+  ],
+  "cliff_allow_write_dir_markers": [
+    ".agents/checkpoints",
+    ".gemini/antigravity/brain"
+  ],
+  "handoff_dir_rel": ".agents/checkpoints",
+  "handoff_max_chars": 2400
+}

@@ -8,6 +8,7 @@ Acerola-Orion 统一命令行入口与启动器部署器 (acerola_orion/__main__
   audit              单独输出高精度配额斜率与本机未匹配步骤配额变化分析
   vault <action>     Orion-Vault 对话自动增量备份、可控开关与误删对话恢复/导出
   guard <action>     管理 Windows 内核句柄断头台进程守卫 (status | start | stop | install | uninstall | daemon | retire-legacy)
+  companion <action> 一键非破坏性装配/检查/卸载 Antigravity 配套 Hooks 与白帽 Skills (status | install | uninstall)
   panel              启动猎户座星盘桌面可视化主控台
   install-launchers  在 ~/workspaces/launchers 生成快捷启动脚本
 """
@@ -26,6 +27,12 @@ from .cli_render import (
     render_telemetry_report,
     render_vault_search_report,
     render_vault_status_report,
+)
+from .companion import (
+    companion_status,
+    install_companion,
+    render_companion_report,
+    uninstall_companion,
 )
 from .constants import (
     APP_CODENAME,
@@ -260,6 +267,25 @@ def build_parser() -> argparse.ArgumentParser:
     p_vt.add_argument("--force", action="store_true", help="restore 模式下若主库仍存在同名对话，留底后强制回滚覆盖")
     p_vt.add_argument("--auto-only", action="store_true", help="sync 模式下遵循自动备份开关状态")
     p_vt.add_argument("--json", action="store_true", help="输出结构化 JSON")
+
+    # companion (Antigravity Hooks & Whitehat Skills Non-Destructive Installer)
+    p_cp = sub.add_parser("companion", help="一键非破坏性装配、检查或卸载 Antigravity 配套 Hooks 与白帽 Skills")
+    p_cp.add_argument(
+        "action",
+        choices=["status", "install", "uninstall"],
+        nargs="?",
+        default="status",
+        help="status (状态检查) | install (非破坏性合并装配) | uninstall (摘除受管项)",
+    )
+    p_cp.add_argument("--workspace", type=str, default=None, help="目标工程工作区路径（安装/查看/卸载工作区配套插件）")
+    p_cp.add_argument("--no-hooks", action="store_true", help="跳过全局 hooks.json 与 EOQ 配置操作")
+    p_cp.add_argument("--no-global-skills", action="store_true", help="install 时跳过全局插件与全局技能部署")
+    p_cp.add_argument("--include-rules", action="store_true", help="安装工作区插件时额外拷贝 engineering-core/rules/AGENTS.md")
+    p_cp.add_argument("--force", action="store_true", help="强制覆盖已存在的受管钩子键、配置或技能文件")
+    p_cp.add_argument("--python-exe", type=str, default=None, help="写入 hooks.json 的目标 Python 解释器路径")
+    p_cp.add_argument("--remove-global", action="store_true", help="uninstall 时一并移除已部署的全局白帽插件与技能")
+    p_cp.add_argument("--remove-workspace", action="store_true", help="uninstall 时一并移除指定工作区中的受管配套技能")
+    p_cp.add_argument("--json", action="store_true", help="输出结构化 JSON")
 
     get_kernel().register_cli(sub)
     return parser
@@ -572,6 +598,37 @@ def main(argv: Optional[List[str]] = None) -> int:
                 prefix = "✅" if res_e.get("ok") else "❌"
                 print(f"{prefix} {res_e.get('message')}")
             return 0 if res_e.get("ok") else 1
+
+    if cmd == "companion":
+        cp_action = str(getattr(args, "action", "status") or "status")
+        ws_arg = getattr(args, "workspace", None)
+        ws_path = Path(ws_arg) if ws_arg else None
+        as_json = bool(getattr(args, "json", False))
+
+        if cp_action == "status":
+            cp_res = companion_status(workspace=ws_path)
+        elif cp_action == "install":
+            cp_res = install_companion(
+                workspace=ws_path,
+                install_hooks=not bool(getattr(args, "no_hooks", False)),
+                install_global=not bool(getattr(args, "no_global_skills", False)),
+                include_rules=bool(getattr(args, "include_rules", False)),
+                force=bool(getattr(args, "force", False)),
+                python_exe=getattr(args, "python_exe", None),
+            )
+        else:
+            cp_res = uninstall_companion(
+                workspace=ws_path,
+                remove_hooks=not bool(getattr(args, "no_hooks", False)),
+                remove_global=bool(getattr(args, "remove_global", False)),
+                remove_workspace=bool(getattr(args, "remove_workspace", False) or ws_path is not None),
+            )
+
+        if as_json:
+            print(json.dumps(cp_res, ensure_ascii=False, indent=2))
+        else:
+            print(render_companion_report(cp_action, cp_res))
+        return 0 if cp_res.get("ok") else 1
 
     plugin_rc = get_kernel().handle_cli(cmd, args)
     if plugin_rc is not None:

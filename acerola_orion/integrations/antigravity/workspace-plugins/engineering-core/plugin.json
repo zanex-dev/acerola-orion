@@ -1,0 +1,11 @@
+{
+  "name": "engineering-core",
+  "displayName": "Engineering Core & Version Seal (工程准则与冷库封版)",
+  "version": "1.0.0",
+  "description": "面向代码工程工作区的查证验证、极简编码准则（AGENTS.md）与旧版本 SHA-256 双向校验外迁技能（version-seal），对接 Acerola-Orion 版本冷库。",
+  "suggestedPrompts": [
+    "扫描当前工作区待外迁的旧版本候选清单",
+    "封版：将已确认的旧版本校验外迁至 Acerola-Orion 版本冷库",
+    "查看版本冷库当前状态与归档快照列表"
+  ]
+}

@@ -188,25 +188,48 @@ class AcerolaOrionPublicSuite(unittest.TestCase):
             "orion_" + "private",
         ]
 
-        scan_targets = list(py_files) + [
-            repo_root / "pyproject.toml",
-            repo_root / "assets" / "logo.svg",
-            repo_root / "AGENTS.md",
-            repo_root / "README.md",
-            repo_root / "README_ZH.md",
-            repo_root / "CHANGELOG.md",
-            repo_root / "CHANGELOG_ZH.md",
+        integ_files = sorted(
+            p
+            for p in (repo_root / "acerola_orion" / "integrations").rglob("*")
+            if p.is_file()
+            and "_versions" not in p.parts
+            and "__pycache__" not in p.parts
+            and p.suffix.lower() in {".py", ".md", ".json", ".svg"}
+        )
+        self.assertGreaterEqual(len(integ_files), 16)
+
+        local_path_tokens = [
+            "c:\\" + "users\\",
+            "c:/" + "users/",
         ]
+
+        scan_targets = list(
+            dict.fromkeys(
+                list(py_files)
+                + list(integ_files)
+                + [
+                    repo_root / "pyproject.toml",
+                    repo_root / "assets" / "logo.svg",
+                    repo_root / "AGENTS.md",
+                    repo_root / "README.md",
+                    repo_root / "README_ZH.md",
+                    repo_root / "CHANGELOG.md",
+                    repo_root / "CHANGELOG_ZH.md",
+                ]
+            )
+        )
         for p in scan_targets:
             if not p.is_file():
                 continue
             txt = p.read_text(encoding="utf-8")
             low = txt.lower()
-            if p.suffix == ".py":
+            if p.suffix.lower() == ".py":
                 for bad in forbidden_code_tokens:
                     self.assertNotIn(bad.lower(), low, f"Forbidden token {bad!r} in {p.name}")
             for clue in clean_room_tokens:
                 self.assertNotIn(clue.lower(), low, f"Unexpected token {clue!r} in {p.name}")
+            for leak in local_path_tokens:
+                self.assertNotIn(leak, low, f"Unexpected local path token {leak!r} in {p.name}")
 
         # Runtime enforcement: ConnectRpcClient must reject any non-127.0.0.1 host
         with self.assertRaises(ValueError):
@@ -215,7 +238,7 @@ class AcerolaOrionPublicSuite(unittest.TestCase):
             rpc.ConnectRpcClient(http_port=8080, csrf_token="tok", host="example.com")
 
     def test_02_version_and_model_pricing_math(self) -> None:
-        self.assertEqual(constants.APP_VERSION, "2.1.0")
+        self.assertEqual(constants.APP_VERSION, "2.4.5")
         c4 = constants.classify_model("Gemini 4 Carbon (High)")
         self.assertEqual(c4.family_id, "4c")
         self.assertAlmostEqual(c4.compute_usd(1_000_000, 0, 100_000, 1.0), 6.0)

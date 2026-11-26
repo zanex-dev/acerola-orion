@@ -1860,6 +1860,10 @@ class WorkspaceVersionVault:
 
 
 def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="Acerola-Orion Workspace Version Vault Worker")
     parser.add_argument("--run-worker", "--worker", dest="run_worker", action="store_true", help="Process queued archive jobs once")
     parser.add_argument("--vault-dir", default="", help="Override version vault directory")
