@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md"><strong>English</strong></a> · <a href="README_ZH.md"><strong>简体中文</strong></a> · <a href="docs/PLUGIN_ARCHITECTURE.md">Plugin Architecture</a> · <a href="CHANGELOG.md">Changelog</a>
+  <a href="README.md"><strong>English</strong></a> · <a href="README_ZH.md"><strong>简体中文</strong></a> · <a href="AGENTS.md">Architecture & Agent Map</a> · <a href="docs/PLUGIN_ARCHITECTURE.md">Plugin Architecture</a> · <a href="CHANGELOG.md">Changelog</a>
 </p>
 
 ---

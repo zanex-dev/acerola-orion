@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md"><strong>English</strong></a> · <a href="README_ZH.md"><strong>简体中文</strong></a> · <a href="docs/PLUGIN_ARCHITECTURE.md">插件架构指南</a> · <a href="CHANGELOG_ZH.md">更新日志</a>
+  <a href="README.md"><strong>English</strong></a> · <a href="README_ZH.md"><strong>简体中文</strong></a> · <a href="AGENTS.md">架构与模块导览</a> · <a href="docs/PLUGIN_ARCHITECTURE.md">插件架构指南</a> · <a href="CHANGELOG_ZH.md">更新日志</a>
 </p>
 
 ---

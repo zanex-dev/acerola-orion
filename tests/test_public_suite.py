@@ -191,6 +191,7 @@ class AcerolaOrionPublicSuite(unittest.TestCase):
         scan_targets = list(py_files) + [
             repo_root / "pyproject.toml",
             repo_root / "assets" / "logo.svg",
+            repo_root / "AGENTS.md",
             repo_root / "README.md",
             repo_root / "README_ZH.md",
             repo_root / "CHANGELOG.md",
